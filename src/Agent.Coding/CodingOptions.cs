@@ -1,3 +1,5 @@
+using Agent.Coding.Sandbox;
+
 namespace Agent.Coding;
 
 /// <summary>
@@ -28,6 +30,9 @@ public sealed class CodingOptions
     public int MaxConcurrentTasks { get; set; } = 2;
 
     public CodingBudgetOptions Budget { get; set; } = new();
+
+    /// <summary>Where the model's commands run: on the host, or in one container per task.</summary>
+    public SandboxOptions Sandbox { get; set; } = new();
 
     /// <summary>Executable base names (without .exe/.cmd) the <c>run</c> tool may start. Configuring the key replaces the defaults.</summary>
     public List<string> AllowedExecutables { get; set; } = [.. DefaultAllowedExecutables];

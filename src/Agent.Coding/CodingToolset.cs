@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Text;
 using System.Text.RegularExpressions;
+using Agent.Coding.Sandbox;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.FileSystemGlobbing;
 using Microsoft.Extensions.Logging;
@@ -36,19 +37,29 @@ public sealed class CodingToolset
 
     private readonly Workspace _workspace;
     private readonly CodingOptions _options;
-    private readonly IProcessRunner _processes;
     private readonly IGitRunner _git;
     private readonly CodingRunState _state;
     private readonly ILogger _logger;
 
-    public CodingToolset(Workspace workspace, CodingOptions options, IProcessRunner processes, IGitRunner git, CodingRunState state, ILogger logger)
+    /// <param name="sandbox">
+    /// Where <c>run</c> and verification commands execute. Omit to run them as host processes
+    /// (<see cref="ProcessSandboxSession"/>), which is what the process sandbox mode does.
+    /// </param>
+    public CodingToolset(
+        Workspace workspace,
+        CodingOptions options,
+        IProcessRunner processes,
+        IGitRunner git,
+        CodingRunState state,
+        ILogger logger,
+        ISandboxSession? sandbox = null)
     {
         _workspace = workspace;
         _options = options;
-        _processes = processes;
         _git = git;
         _state = state;
         _logger = logger;
+        Sandbox = sandbox ?? new ProcessSandboxSession(processes, workspace);
 
         Paths = new PathGuard(workspace.RepoPath, options.ProtectedPaths.Concat(workspace.Profile.ExtraProtectedPaths));
         Commands = new CommandPolicy(options.AllowedExecutables.Concat(workspace.Profile.ExtraAllowedExecutables), options.AllowedGitSubcommands);
@@ -57,6 +68,9 @@ public sealed class CodingToolset
     public PathGuard Paths { get; }
 
     public CommandPolicy Commands { get; }
+
+    /// <summary>The environment <c>run</c> and verification commands execute in.</summary>
+    public ISandboxSession Sandbox { get; }
 
     public IReadOnlyList<AIFunction> CreateTools() =>
     [
@@ -402,11 +416,8 @@ public sealed class CodingToolset
         ProcessResult result;
         try
         {
-            result = await _processes.RunAsync(
-                parsed.Executable,
-                parsed.Arguments,
-                _workspace.RepoPath,
-                null,
+            result = await Sandbox.ExecuteAsync(
+                parsed,
                 TimeSpan.FromSeconds(Math.Max(1, _options.RunTimeoutSeconds)),
                 cancellationToken).ConfigureAwait(false);
         }

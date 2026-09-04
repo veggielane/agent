@@ -34,6 +34,38 @@ dotnet run
 `Persistence:ConnectionString` the host keeps tasks and cursors in memory (fine for trying things out).
 `Api:Enabled=false` runs the process as a pure worker with no HTTP listener.
 
+### Running coding tasks in a container
+
+By default the model's commands run as child processes on the worker host. To isolate each task in its own
+container instead, set `Coding:Sandbox:Mode` to `Docker` (needs a reachable Docker daemon — Linux, Docker
+Desktop, or WSL2):
+
+```jsonc
+"Coding": {
+  "Sandbox": {
+    "Mode": "Docker",
+    "Network": "none",                       // or a network restricted to GitLab + your registries
+    "Images": { "dotnet": "our-registry/dotnet-sdk:10.0" },
+    "Volumes": ["agent-nuget:/root/.nuget/packages"],   // pre-populated cache, needed when Network is "none"
+    "Memory": "4g", "Cpus": 2, "User": "1000:1000"
+  }
+}
+```
+
+The repository is bind-mounted at `/work`, the image is chosen from the repository's own build command
+(dotnet/node/python/go/rust, else `DefaultImage`), and the container is removed when the task ends. Git,
+credentials, and file edits stay on the host, so **the container never sees a token**. `!status` reports the
+daemon version or why it is unavailable.
+
+Prerequisites on the worker: Linux containers, and **`Coding:WorkspaceRoot` must be a directory the Docker
+daemon is allowed to bind-mount**. On Docker Desktop that means adding it under Settings → Resources → File
+sharing (or using the WSL2 backend with a path inside WSL); an unshared path makes `docker run` hang rather
+than fail, which surfaces as a task stuck in Preparing until the start timeout. Verify with:
+
+```bash
+docker run --rm -v "<your workspace root>:/work" -w /work alpine ls /work
+```
+
 Runtime files next to the binary:
 
 | Path | Purpose |

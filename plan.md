@@ -445,9 +445,34 @@ v1 (process isolation, any OS):
   manifests, secrets; violations fail the task.
 - The worker runs as a low-privilege service account with write access only to the workspace root.
 
-v2 (M9): one container per task (`docker run --rm`, workspace bind-mounted, egress limited to GitLab
-and package registries), image per toolchain, memory/CPU limits. Requires a Linux worker or WSL2 —
-see open question 4.
+**Container per task (implemented).** `Coding:Sandbox:Mode` selects where the model's commands run:
+`Process` (the v1 behaviour above, the default) or `Docker`. Only the `run` tool and build/test
+verification go through the sandbox — clone, branch, commit, push, and every file edit stay with the
+orchestrator on the host, so **the container never sees a git credential**.
+
+- One container per coding run: `docker run --detach` … `sleep infinity`, each command a `docker exec`,
+  removed with `docker rm --force` when the run ends (including on failure or cancellation).
+- The repository is bind-mounted at `WorkDir` (default `/work`), which is also the working directory.
+  The paths the model reads and writes are identical in both modes.
+- Isolation defaults: `--cap-drop ALL`, `--security-opt no-new-privileges`, `--memory 4g`, `--cpus 2`,
+  `--pids-limit 512`, `--init`, and a `/tmp` tmpfs. `ReadOnlyRootFilesystem` and `User` (e.g. `1000:1000`)
+  are opt-in; `ExtraArgs` passes anything else through to `docker run`.
+- **Egress** is `Network` (default `bridge`): set it to `none` to block egress entirely, or to a network
+  whose egress is restricted to GitLab and the package registries. With `none`, pre-populate a package
+  cache through `Volumes` (e.g. `agent-nuget:/root/.nuget/packages`) or restores will fail.
+- **Image per toolchain**, chosen from the repository's own build/test commands: `dotnet`, `node`,
+  `python`, `go`, `rust`, else `DefaultImage`. Override any entry in `Images` to point at an internal
+  registry.
+- Timeouts are enforced inside the container with coreutils `timeout -s KILL`, so a hung process dies
+  there rather than being orphaned when the client gives up; the host wait is deliberately longer.
+- Starting the sandbox is part of the run: if `docker run` fails (no daemon, image missing, pull
+  timeout), the task fails with that message instead of silently running on the host.
+- Requires a Linux worker, Docker Desktop, or WSL2 (open question 4). `!status` reports the daemon
+  version, or why it is unavailable, so a misconfigured host is visible before a task is queued.
+- **Operational prerequisite:** the daemon must be allowed to bind-mount `Coding:WorkspaceRoot`
+  (Docker Desktop → Resources → File sharing). An unshared path makes `docker run` *hang* rather than
+  fail — verified on a real daemon during implementation — so the start timeout is what catches it, and
+  its message names the path.
 
 ### 6.10 Persistence (`Agent.Persistence`)
 
@@ -662,6 +687,7 @@ The agent now executes commands and pushes code, so the threat model matters mor
 | Bot token misuse | Bot is Developer, not Maintainer; protected branches; token scoped to needed groups; token used only by the orchestrator for clone/push/API, never exposed to tools. |
 | Runaway cost / loops | Per-task budgets (turns, tokens, time, `run` count); global concurrency cap; per-user daily task cap **[decide]**. |
 | Destructive commands | Allow-list + workspace-only paths; no `rm`-style tools; git reset/clean only by orchestrator. |
+| Compromised build script / dependency | Container per task (6.9): capabilities dropped, memory/CPU/PID limits, configurable egress (`none` blocks it), and no credential inside the container — git and tokens stay on the host. |
 | Inbound spoofing | All channels are pull-based (WebSocket client or polling); there is no inbound endpoint to spoof. The CLI API requires a Keycloak-issued bearer token, is intranet-only, and can be disabled. |
 | Traceability | Commit trailers (`Requested-by`, `Task`), MR description with full summary, audit + task event log. |
 | Command abuse | Role-gated commands (Users / Team / Admin) checked before parsing; typed binding rejects unexpected input; YAML commands can only use registered tools; admin commands audited. |
@@ -830,15 +856,15 @@ Mattermost, in-process MCP servers over pipes, local bare git repositories for t
 | Mattermost (WebSocket, threads, DMs, reactions, splitting) | `Agent.Channels.Mattermost` | 116 |
 | Jira DC (polling, wiki formatter, tools, repo resolver) | `Agent.Channels.Jira` | 164 |
 | GitLab (to-do polling, labelled issues, MR publisher, tools) | `Agent.Channels.GitLab` | 149 |
-| Coding engine + worker (workspace, git, tools, budgets, MR flow) | `Agent.Coding`, `Agent.Worker` | 145 |
+| Coding engine + worker (workspace, git, tools, budgets, MR flow, container sandbox) | `Agent.Coding`, `Agent.Worker` | 172 |
 | Persistence (EF Core, SQL Server migration), Keycloak, LDAP | `Agent.Persistence`, `Agent.Infrastructure.*` | 60 |
 | MCP client, governance, `!mcp` | `Agent.Mcp` | 124 |
 | Host API (JWT bearer, chat/SSE, tasks) and CLI remote backend | `Agent.Host`, `Agent.Cli` | 18 |
-| **Total** | | **894, all passing** |
+| **Total** | | **921, all passing** |
 
-Milestone mapping: M0–M8 are implemented. From M9 the per-task **container sandbox** is not done (v1 uses
-process isolation with a scrubbed environment, an executable allow-list, and protected paths); per-user daily
-caps and the Windows service packaging script are also open. The optional MCP *server* side (6.13) is not built.
+Milestone mapping: M0–M8 are implemented, plus the M9 per-task **container sandbox** (6.9;
+`Coding:Sandbox:Mode = Docker`, 26 tests, default stays `Process`). Still open from M9: per-user daily caps
+and the Windows service packaging script. The optional MCP *server* side (6.13) is not built.
 
 Deviations from the text above worth knowing:
 

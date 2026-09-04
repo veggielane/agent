@@ -1,3 +1,4 @@
+using Agent.Coding.Sandbox;
 using Agent.Core.Authorization;
 using Agent.Core.Channels;
 using Agent.Core.Llm;
@@ -23,7 +24,7 @@ public sealed class CodingEngineTests : IDisposable
 
     public void Dispose() => _dir.Dispose();
 
-    private (CodingEngine Engine, Workspace Workspace) Build(ScriptedChatClient script, Action<CodingOptions>? configure = null, RepoProfile? profile = null)
+    private (CodingEngine Engine, Workspace Workspace) Build(ScriptedChatClient script, Action<CodingOptions>? configure = null, RepoProfile? profile = null, ISandbox? sandbox = null)
     {
         var repo = _dir.Combine("repo");
         Directory.CreateDirectory(repo);
@@ -41,13 +42,57 @@ public sealed class CodingEngineTests : IDisposable
 
         var processes = new CliWrapProcessRunner(monitor, NullLogger<CliWrapProcessRunner>.Instance);
         var git = new GitRunner(processes, NullLogger<GitRunner>.Instance);
-        var engine = new CodingEngine(factory, _registry, prompts, processes, git, monitor, NullLoggerFactory.Instance);
+        var engine = new CodingEngine(factory, _registry, prompts, processes, git, monitor, NullLoggerFactory.Instance, sandbox);
         var workspace = new Workspace(42, _dir.Path, repo, "agent/proj-1-thing", "main", profile ?? RepoProfile.Empty);
         return (engine, workspace);
     }
 
     private CodingRun Run(Workspace workspace, string instruction = "Add a greeting file.")
         => new(workspace, instruction, null, false, _requester);
+
+    [Fact]
+    public async Task RunAsync_RunTool_ExecutesInTheSandboxAndDisposesIt()
+    {
+        var sandbox = new FakeSandbox();
+        var script = new ScriptedChatClient()
+            .ThenToolCall("run", new Dictionary<string, object?> { ["command"] = "dotnet build" })
+            .ThenToolCall("done", new Dictionary<string, object?> { ["summary"] = "Built it." });
+        var (engine, workspace) = Build(script, sandbox: sandbox);
+
+        var result = await engine.RunAsync(Run(workspace), null, TestContext.Current.CancellationToken);
+
+        Assert.Equal(CodingStopReason.Done, result.StopReason);
+        Assert.Equal(["dotnet build"], sandbox.Session!.Commands);
+        Assert.True(sandbox.Session.Disposed);
+        Assert.Contains("a fake container", script.Calls[0][0].Text, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task RunAsync_Verification_RunsInTheSandboxToo()
+    {
+        var sandbox = new FakeSandbox();
+        var script = new ScriptedChatClient().ThenToolCall("done", new Dictionary<string, object?> { ["summary"] = "Nothing to change." });
+        var (engine, workspace) = Build(script, profile: new RepoProfile("dotnet build", "dotnet test", null, [], [], null), sandbox: sandbox);
+
+        var result = await engine.RunAsync(Run(workspace), null, TestContext.Current.CancellationToken);
+
+        Assert.True(result.Verified);
+        Assert.Equal(["dotnet build", "dotnet test"], sandbox.Session!.Commands);
+    }
+
+    [Fact]
+    public async Task RunAsync_SandboxCannotStart_StopsWithErrorAndNeverCallsTheModel()
+    {
+        var script = new ScriptedChatClient().ThenText("should never run");
+        var (engine, workspace) = Build(script, sandbox: new FakeSandbox(new SandboxException("docker run failed: no such image")));
+
+        var result = await engine.RunAsync(Run(workspace), null, TestContext.Current.CancellationToken);
+
+        Assert.Equal(CodingStopReason.Error, result.StopReason);
+        Assert.Contains("no such image", result.Error, StringComparison.Ordinal);
+        Assert.Contains("sandbox could not be started", result.Summary, StringComparison.Ordinal);
+        Assert.Empty(script.Calls);
+    }
 
     [Fact]
     public async Task RunAsync_WriteFileThenDone_WritesFileAndStopsWithDone()

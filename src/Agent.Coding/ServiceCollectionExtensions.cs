@@ -1,3 +1,5 @@
+using Agent.Coding.Sandbox;
+using Agent.Core.Infrastructure;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -21,17 +23,29 @@ public static class ServiceCollectionExtensions
                 ReplaceIfConfigured(section, nameof(CodingOptions.AllowedExecutables), options.AllowedExecutables);
                 ReplaceIfConfigured(section, nameof(CodingOptions.ProtectedPaths), options.ProtectedPaths);
                 ReplaceIfConfigured(section, nameof(CodingOptions.AllowedGitSubcommands), options.AllowedGitSubcommands);
+
+                var sandbox = section.GetSection(nameof(CodingOptions.Sandbox));
+                ReplaceIfConfigured(sandbox, nameof(SandboxOptions.Volumes), options.Sandbox.Volumes);
+
+                // Raw docker arguments are positional and may legitimately repeat ("--dns a --dns b").
+                ReplaceIfConfigured(sandbox, nameof(SandboxOptions.ExtraArgs), options.Sandbox.ExtraArgs, distinct: false);
             });
 
         services.AddLogging();
         services.TryAddSingleton<IProcessRunner, CliWrapProcessRunner>();
         services.TryAddSingleton<IGitRunner, GitRunner>();
         services.TryAddSingleton<IWorkspaceManager, WorkspaceManager>();
+
+        services.TryAddSingleton<ProcessSandbox>();
+        services.TryAddSingleton<DockerSandbox>();
+        services.TryAddSingleton<ISandbox, SandboxSelector>();
+        services.AddSingleton<IStatusContributor>(sp => sp.GetRequiredService<DockerSandbox>());
+
         services.TryAddSingleton<ICodingEngine, CodingEngine>();
         return services;
     }
 
-    private static void ReplaceIfConfigured(IConfiguration section, string key, List<string> target)
+    private static void ReplaceIfConfigured(IConfiguration section, string key, List<string> target, bool distinct = true)
     {
         var configured = section.GetSection(key).GetChildren()
             .Select(c => c.Value)
@@ -45,6 +59,6 @@ public static class ServiceCollectionExtensions
         }
 
         target.Clear();
-        target.AddRange(configured.Distinct(StringComparer.OrdinalIgnoreCase));
+        target.AddRange(distinct ? configured.Distinct(StringComparer.OrdinalIgnoreCase) : configured);
     }
 }

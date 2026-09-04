@@ -62,6 +62,12 @@ One core, thin adapters. Everything flows through `Agent.Core`:
   follows up, cancels. `Agent.Worker` claims queued tasks and drives `Agent.Coding`'s `ICodingEngine`
   (clone → branch → LLM loop with file/search/edit/run tools → verify → commit → push → MR via
   `IMergeRequestPublisher`). Progress goes back through `ITaskNotifierRouter`.
+- **Sandbox** (`Agent.Coding/Sandbox`): `ISandbox` supplies one `ISandboxSession` per coding run, and only
+  the `run` tool and build/test verification go through it — git, credentials, and file edits stay on the
+  host. `SandboxSelector` picks by `Coding:Sandbox:Mode`: `Process` (host child processes, the default) or
+  `Docker` (one `docker run --detach` container per task, repo bind-mounted at `WorkDir`, `docker exec` per
+  command, `docker rm --force` on dispose). Docker CLI calls go through `IProcessRunner`, so they are tested
+  with a recording fake and no daemon.
 - **Persistence** (`Agent.Persistence`): EF Core on SQL Server; only durable state (tasks, events, audit,
   cursors, processed events). Core registers in-memory stores with `TryAdd`; infrastructure replaces them.
 - **Host** (`Agent.Host`): Generic Host running listeners, pollers, and the worker. ASP.NET Core (Kestrel) is

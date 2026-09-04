@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text;
+using Agent.Coding.Sandbox;
 using Agent.Core.Authorization;
 using Agent.Core.Channels;
 using Agent.Core.Llm;
@@ -69,7 +70,12 @@ public sealed class CodingEngine : ICodingEngine
     private readonly IOptionsMonitor<CodingOptions> _options;
     private readonly ILoggerFactory _loggerFactory;
     private readonly ILogger<CodingEngine> _logger;
+    private readonly ISandbox _sandbox;
 
+    /// <param name="sandbox">
+    /// Supplies the execution environment for each run. Defaults to the host process sandbox, which is the
+    /// behaviour when <c>Coding:Sandbox:Mode</c> is <c>Process</c>.
+    /// </param>
     public CodingEngine(
         IChatClientFactory clients,
         IToolRegistry tools,
@@ -77,7 +83,8 @@ public sealed class CodingEngine : ICodingEngine
         IProcessRunner processes,
         IGitRunner git,
         IOptionsMonitor<CodingOptions> options,
-        ILoggerFactory loggerFactory)
+        ILoggerFactory loggerFactory,
+        ISandbox? sandbox = null)
     {
         _clients = clients;
         _tools = tools;
@@ -87,6 +94,7 @@ public sealed class CodingEngine : ICodingEngine
         _options = options;
         _loggerFactory = loggerFactory;
         _logger = loggerFactory.CreateLogger<CodingEngine>();
+        _sandbox = sandbox ?? new ProcessSandbox(processes);
     }
 
     public async Task<CodingResult> RunAsync(CodingRun run, IProgress<string>? progress, CancellationToken cancellationToken)
@@ -95,7 +103,27 @@ public sealed class CodingEngine : ICodingEngine
         var budget = options.Budget;
         var workspace = run.Workspace;
         var state = new CodingRunState();
-        var toolset = new CodingToolset(workspace, options, _processes, _git, state, _loggerFactory.CreateLogger<CodingToolset>());
+
+        ISandboxSession session;
+        try
+        {
+            progress?.Report($"starting {_sandbox.Name} sandbox");
+            session = await _sandbox.StartAsync(workspace, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            return Stopped(CodingStopReason.Cancelled, "Cancelled before the sandbox started.", null);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Could not start the {Sandbox} sandbox for task #{Task}", _sandbox.Name, workspace.TaskId);
+            return Stopped(CodingStopReason.Error, $"The {_sandbox.Name} sandbox could not be started.", ex.Message);
+        }
+
+        await using var sandboxSession = session.ConfigureAwait(false);
+        _logger.LogInformation("Task #{Task} runs commands in {Sandbox}: {Description}", workspace.TaskId, _sandbox.Name, session.Description);
+
+        var toolset = new CodingToolset(workspace, options, _processes, _git, state, _loggerFactory.CreateLogger<CodingToolset>(), session);
 
         using var requestScope = RequestContext.Begin(run.Requester);
 
@@ -286,6 +314,9 @@ public sealed class CodingEngine : ICodingEngine
             error);
     }
 
+    private static CodingResult Stopped(CodingStopReason reason, string summary, string? error)
+        => new(summary, [], [], null, null, 0, 0, reason, error);
+
     private IList<AITool> BuildTools(CodingToolset toolset, CallerIdentity requester)
     {
         var tools = new List<AITool>();
@@ -336,6 +367,7 @@ public sealed class CodingEngine : ICodingEngine
         sb.Append("- You are on branch `").Append(workspace.Branch).Append("` based on `").Append(workspace.BaseBranch).Append("`. Do not switch branches, commit, or push; that happens after you call done.\n");
         sb.Append("- Protected paths are read-only and cannot be written: ").Append(string.Join(", ", toolset.Paths.ProtectedPatterns)).Append(".\n");
         sb.Append("- The run tool starts one executable directly (no shell). Allowed executables: ").Append(string.Join(", ", toolset.Commands.AllowedExecutables.Order(StringComparer.OrdinalIgnoreCase))).Append(".\n");
+        sb.Append("- Commands from the run tool execute in ").Append(toolset.Sandbox.Description).Append(". File edits and git happen outside it, so paths you read and write are the same either way.\n");
         sb.Append("- Budget: ").Append(_options.CurrentValue.Budget.MaxTurns).Append(" turns and ").Append(_options.CurrentValue.Budget.MaxRuns).Append(" run invocations. Prefer reading and editing over rebuilding repeatedly.\n");
 
         if (!string.IsNullOrWhiteSpace(workspace.Profile.BuildCommand))

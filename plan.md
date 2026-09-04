@@ -463,6 +463,7 @@ orchestrator on the host, so **the container never sees a git credential**.
 - **Image per toolchain**, chosen from the repository's own build/test commands: `dotnet`, `node`,
   `python`, `go`, `rust`, else `DefaultImage`. Override any entry in `Images` to point at an internal
   registry.
+- **Per-repository containers via `.engex.yml`** (6.9.1) when the toolchain default is not enough.
 - Timeouts are enforced inside the container with coreutils `timeout -s KILL`, so a hung process dies
   there rather than being orphaned when the client gives up; the host wait is deliberately longer.
 - Starting the sandbox is part of the run: if `docker run` fails (no daemon, image missing, pull
@@ -473,6 +474,41 @@ orchestrator on the host, so **the container never sees a git credential**.
   (Docker Desktop → Resources → File sharing). An unshared path makes `docker run` *hang* rather than
   fail — verified on a real daemon during implementation — so the start timeout is what catches it, and
   its message names the path.
+
+#### 6.9.1 `.engex.yml` — what a repository may ask for
+
+A repository declares its own build, policy, guidance, and **container** in `.engex.yml` at its root
+(`.engex.yaml` and the older `.agent/config.yml` are also accepted; the first one found wins):
+
+```yaml
+build: dotnet build -warnaserror
+test: dotnet test --no-build
+container:
+  profile: dotnet-node       # a name from the host's menu
+  memory: 6g
+  network: none
+allowedExecutables: [pwsh]
+protectedPaths: [deploy/**]
+instructions: |
+  Run the tests for the project you changed.
+```
+
+The file is **repository content, so it is a request, not a decision**: anyone who can open a merge
+request can edit it, and a container image is arbitrary code on the worker. `SandboxPolicy` grants
+narrowing and refuses widening, failing the task with an explanatory message rather than silently
+running somewhere the repository did not ask for:
+
+| Key | Rule |
+|-----|------|
+| `profile` | Must exist in `Coding:Sandbox:Profiles`. Unknown → task fails, listing the available names. |
+| `image` | Must match a glob in `Coding:Sandbox:AllowedImages`, **empty by default** so raw images are refused until an operator opts in. |
+| `memory`, `cpus` | Honoured downward, clamped at `MaxMemory` / `MaxCpus`. |
+| `network` | Only `none` (closing) or the host's current value. Opening → task fails. |
+| `env` | Merged, with host values winning on collision. |
+| mounts | Not settable by a repository at all; cache volumes belong to a host profile. |
+
+`.engex.yml` is in the default protected paths, so the coding agent can read it but cannot edit the
+policy it is running under.
 
 ### 6.10 Persistence (`Agent.Persistence`)
 
@@ -856,15 +892,15 @@ Mattermost, in-process MCP servers over pipes, local bare git repositories for t
 | Mattermost (WebSocket, threads, DMs, reactions, splitting) | `Agent.Channels.Mattermost` | 116 |
 | Jira DC (polling, wiki formatter, tools, repo resolver) | `Agent.Channels.Jira` | 164 |
 | GitLab (to-do polling, labelled issues, MR publisher, tools) | `Agent.Channels.GitLab` | 149 |
-| Coding engine + worker (workspace, git, tools, budgets, MR flow, container sandbox) | `Agent.Coding`, `Agent.Worker` | 172 |
+| Coding engine + worker (workspace, git, tools, budgets, MR flow, container sandbox, `.engex.yml` policy) | `Agent.Coding`, `Agent.Worker` | 218 |
 | Persistence (EF Core, SQL Server migration), Keycloak, LDAP | `Agent.Persistence`, `Agent.Infrastructure.*` | 60 |
 | MCP client, governance, `!mcp` | `Agent.Mcp` | 124 |
 | Host API (JWT bearer, chat/SSE, tasks) and CLI remote backend | `Agent.Host`, `Agent.Cli` | 18 |
-| **Total** | | **921, all passing** |
+| **Total** | | **967, all passing** |
 
 Milestone mapping: M0–M8 are implemented, plus the M9 per-task **container sandbox** (6.9;
-`Coding:Sandbox:Mode = Docker`, 26 tests, default stays `Process`). Still open from M9: per-user daily caps
-and the Windows service packaging script. The optional MCP *server* side (6.13) is not built.
+`Coding:Sandbox:Mode = Docker`, default stays `Process`) and per-repository containers through `.engex.yml`
+(6.9.1). Still open from M9: per-user daily caps and the Windows service packaging script. The optional MCP *server* side (6.13) is not built.
 
 Deviations from the text above worth knowing:
 

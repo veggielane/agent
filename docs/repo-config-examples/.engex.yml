@@ -1,0 +1,59 @@
+# .engex.yml — copy to the root of a repository the agent works on.
+#
+# Every key is optional. Without this file the agent detects dotnet/npm/make/pytest projects and
+# picks a container image from the build command. Add the file when your project needs something
+# more specific.
+#
+# This file is read-only to the agent: it cannot rewrite the policy it runs under.
+
+# ---------------------------------------------------------------- verification
+# Run after the agent finishes; failures come back to it for a bounded number of fix-up turns.
+# No shell syntax (no &&, |, >): put multi-step verification in a script or build target.
+build: dotnet build -warnaserror
+test: dotnet test --no-build
+lint: dotnet format --verify-no-changes
+
+# ---------------------------------------------------------------- container
+# Where this project's commands run. The agent host has the final say on all of it.
+container:
+  # Preferred: pick an image by name from the menu the agent host defines.
+  # An unknown name fails the task and lists what is available.
+  profile: dotnet-node
+
+  # Alternative: name an image directly. Only works when the host allow-lists it
+  # (Coding:Sandbox:AllowedImages), because an image is arbitrary code on the worker.
+  # image: our-registry.corp/team/build:3
+
+  # Resource requests. Lower is always honoured; higher is clamped to the host ceiling.
+  memory: 6g
+  cpus: 4
+
+  # You may close the network, never open it. Omit it to keep the host's setting.
+  # With no network, restores need a package cache mounted by the host or the profile.
+  network: none
+
+  # Build knobs, not secrets: these end up on the docker command line.
+  # The host's own values win if a key collides.
+  env:
+    DOTNET_gcServer: "1"
+
+# Mounts are deliberately not settable here: a repository-chosen mount would be a way out of
+# the sandbox. Ask an administrator for a profile with the cache volume you need.
+
+# ---------------------------------------------------------------- policy
+# Extra executables the agent may run in this repository, on top of the host allow list.
+allowedExecutables:
+  - pwsh
+
+# Paths the agent may read but never modify, on top of the host list.
+protectedPaths:
+  - deploy/**
+  - "**/*.snk"
+  - src/Generated/**
+
+# ---------------------------------------------------------------- guidance
+# Prepended to the coding prompt. AGENTS.md is also read when present, and both are treated as
+# data rather than as instructions that override the agent's own rules.
+instructions: |
+  Run the tests for the project you changed before finishing.
+  Prefer extending existing abstractions over adding new ones.

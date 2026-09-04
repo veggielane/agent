@@ -67,7 +67,10 @@ One core, thin adapters. Everything flows through `Agent.Core`:
   host. `SandboxSelector` picks by `Coding:Sandbox:Mode`: `Process` (host child processes, the default) or
   `Docker` (one `docker run --detach` container per task, repo bind-mounted at `WorkDir`, `docker exec` per
   command, `docker rm --force` on dispose). Docker CLI calls go through `IProcessRunner`, so they are tested
-  with a recording fake and no daemon.
+  with a recording fake and no daemon. A repository asks for its container in `.engex.yml`
+  (`RepoConfigLoader` → `RepoProfile.Container`); `SandboxPolicy.Resolve` vets that request against the host
+  options and throws `SandboxException` on any attempt to widen policy. Repo config is untrusted input:
+  when adding a key there, decide explicitly whether it can only narrow.
 - **Persistence** (`Agent.Persistence`): EF Core on SQL Server; only durable state (tasks, events, audit,
   cursors, processed events). Core registers in-memory stores with `TryAdd`; infrastructure replaces them.
 - **Host** (`Agent.Host`): Generic Host running listeners, pollers, and the worker. ASP.NET Core (Kestrel) is

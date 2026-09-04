@@ -52,10 +52,35 @@ Desktop, or WSL2):
 }
 ```
 
-The repository is bind-mounted at `/work`, the image is chosen from the repository's own build command
-(dotnet/node/python/go/rust, else `DefaultImage`), and the container is removed when the task ends. Git,
-credentials, and file edits stay on the host, so **the container never sees a token**. `!status` reports the
-daemon version or why it is unavailable.
+The repository is bind-mounted at `/work` and the container is removed when the task ends. Git, credentials,
+and file edits stay on the host, so **the container never sees a token**. `!status` reports the daemon version
+or why it is unavailable.
+
+**Per-repository containers.** A repository asks for what it needs in `.engex.yml` at its root
+(see [`docs/repo-config-examples/.engex.yml`](docs/repo-config-examples/.engex.yml)):
+
+```yaml
+container:
+  profile: node-chromium    # a name from the host's menu — the safe way
+  memory: 6g                # honoured downward, clamped at MaxMemory
+  network: none             # a repo may close the network, never open it
+```
+
+The repository requests; the host decides. `.engex.yml` is repository content, and anyone who can open a
+merge request can edit it, so an image is treated as arbitrary code:
+
+| Repo writes | Granted when |
+|---|---|
+| `profile: <name>` | The name exists in `Coding:Sandbox:Profiles`. Unknown names fail the task and list what is available. |
+| `image: <ref>` | It matches a glob in `Coding:Sandbox:AllowedImages`. That list is **empty by default**, so raw images are refused until you opt in. |
+| `memory` / `cpus` | Always, clamped to `MaxMemory` / `MaxCpus`. |
+| `network` | Only `none`, or the value the host already uses. |
+| `env` | Always, but host values win on a collision. |
+| mounts | Never. Put cache volumes on a profile instead. |
+
+With nothing in `.engex.yml`, the image comes from the repository's build command (dotnet, node, python, go,
+rust) and then `DefaultImage`. The agent cannot edit `.engex.yml`: it is protected, so a task cannot rewrite
+the policy it runs under.
 
 Prerequisites on the worker: Linux containers, and **`Coding:WorkspaceRoot` must be a directory the Docker
 daemon is allowed to bind-mount**. On Docker Desktop that means adding it under Settings → Resources → File

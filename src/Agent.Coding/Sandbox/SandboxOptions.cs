@@ -35,6 +35,25 @@ public sealed class SandboxOptions
     };
 
     /// <summary>
+    /// The menu a repository may choose from by name in <c>.engex.yml</c> (<c>container: {profile: ...}</c>).
+    /// This is the safe way to let repositories pick an image: they can only select what you defined here.
+    /// </summary>
+    public Dictionary<string, SandboxProfile> Profiles { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Glob patterns for images a repository may name directly (<c>container: {image: ...}</c>), e.g.
+    /// <c>our-registry.corp/*</c>. Empty (the default) means repositories may not name images at all;
+    /// an image is arbitrary code, so opening this is a deliberate decision.
+    /// </summary>
+    public List<string> AllowedImages { get; set; } = [];
+
+    /// <summary>Ceiling for a repository's memory request. Empty means no ceiling beyond <see cref="Memory"/>.</summary>
+    public string? MaxMemory { get; set; } = "8g";
+
+    /// <summary>Ceiling for a repository's CPU request. 0 means no ceiling.</summary>
+    public double MaxCpus { get; set; } = 4;
+
+    /// <summary>
     /// Docker network for the container: <c>none</c> blocks all egress (restores must then hit a pre-populated
     /// cache volume), <c>bridge</c> allows it, or the name of a network whose egress is restricted to GitLab and
     /// the package registries.

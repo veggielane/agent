@@ -47,11 +47,19 @@ public sealed class DockerSandbox : ISandbox, IStatusContributor
     public async Task<ISandboxSession> StartAsync(Workspace workspace, CancellationToken cancellationToken)
     {
         var options = _options.CurrentValue.Sandbox;
-        var image = ResolveImage(options, workspace.Profile);
-        var name = ContainerName(workspace.TaskId);
-        var arguments = BuildRunArguments(options, workspace, image, name);
 
-        _logger.LogInformation("Starting sandbox container {Container} from {Image} for task #{Task}", name, image, workspace.TaskId);
+        // Throws when the repository asked for something the host does not grant, so the task fails with
+        // that message rather than quietly running somewhere else.
+        var resolved = SandboxPolicy.Resolve(options, workspace.Profile);
+        var name = ContainerName(workspace.TaskId);
+        var arguments = BuildRunArguments(options, workspace, resolved, name);
+
+        _logger.LogInformation(
+            "Starting sandbox container {Container} from {Image} ({Source}) for task #{Task}",
+            name,
+            resolved.Image,
+            resolved.Source,
+            workspace.TaskId);
 
         ProcessResult result;
         try
@@ -76,7 +84,7 @@ public sealed class DockerSandbox : ISandbox, IStatusContributor
             throw new SandboxException($"docker run failed ({reason}): {result.CombinedOutput.Trim()}");
         }
 
-        return new DockerSandboxSession(_processes, options, workspace, name, image, _logger);
+        return new DockerSandboxSession(_processes, options, workspace, name, resolved, _logger);
     }
 
     public async Task<string> GetStatusAsync(CancellationToken cancellationToken)
@@ -150,7 +158,7 @@ public sealed class DockerSandbox : ISandbox, IStatusContributor
         return null;
     }
 
-    public static IReadOnlyList<string> BuildRunArguments(SandboxOptions options, Workspace workspace, string image, string containerName)
+    public static IReadOnlyList<string> BuildRunArguments(SandboxOptions options, Workspace workspace, ResolvedSandbox resolved, string containerName)
     {
         var args = new List<string>
         {
@@ -158,9 +166,9 @@ public sealed class DockerSandbox : ISandbox, IStatusContributor
             "--detach",
             "--name", containerName,
             "--label", $"agent.task={workspace.TaskId}",
-            "--network", options.Network,
-            "--memory", options.Memory,
-            "--cpus", options.Cpus.ToString(CultureInfo.InvariantCulture),
+            "--network", resolved.Network,
+            "--memory", resolved.Memory,
+            "--cpus", resolved.Cpus.ToString(CultureInfo.InvariantCulture),
             "--pids-limit", options.PidsLimit.ToString(CultureInfo.InvariantCulture),
             "--security-opt", "no-new-privileges",
             "--cap-drop", "ALL",
@@ -193,33 +201,37 @@ public sealed class DockerSandbox : ISandbox, IStatusContributor
         args.Add("--workdir");
         args.Add(options.WorkDir);
 
-        foreach (var volume in options.Volumes.Where(v => !string.IsNullOrWhiteSpace(v)))
+        foreach (var volume in resolved.Volumes.Where(v => !string.IsNullOrWhiteSpace(v)))
         {
             args.Add("--volume");
             args.Add(volume.Trim());
         }
 
-        foreach (var (key, value) in BuildEnvironment(options))
+        foreach (var (key, value) in BuildEnvironment(resolved.Env))
         {
             args.Add("--env");
             args.Add($"{key}={value}");
         }
 
         args.AddRange(options.ExtraArgs.Where(a => !string.IsNullOrWhiteSpace(a)));
-        args.Add(image);
+        args.Add(resolved.Image);
         args.Add("sleep");
         args.Add("infinity");
         return args;
     }
 
-    public static IReadOnlyDictionary<string, string> BuildEnvironment(SandboxOptions options)
+    /// <summary>The forced safety baseline, with the resolved (profile + repository + host) values layered on top.</summary>
+    public static IReadOnlyDictionary<string, string> BuildEnvironment(IReadOnlyDictionary<string, string>? extra)
     {
         var env = new Dictionary<string, string>(ContainerEnvironment, StringComparer.Ordinal);
-        foreach (var (key, value) in options.Env)
+        if (extra is not null)
         {
-            if (!string.IsNullOrWhiteSpace(key))
+            foreach (var (key, value) in extra)
             {
-                env[key.Trim()] = value ?? string.Empty;
+                if (!string.IsNullOrWhiteSpace(key))
+                {
+                    env[key.Trim()] = value ?? string.Empty;
+                }
             }
         }
 
@@ -251,21 +263,24 @@ public sealed class DockerSandboxSession : ISandboxSession
     private readonly ILogger _logger;
     private bool _disposed;
 
-    public DockerSandboxSession(IProcessRunner processes, SandboxOptions options, Workspace workspace, string containerName, string image, ILogger logger)
+    public DockerSandboxSession(IProcessRunner processes, SandboxOptions options, Workspace workspace, string containerName, ResolvedSandbox resolved, ILogger logger)
     {
         _processes = processes;
         _options = options;
         _workspace = workspace;
         ContainerName = containerName;
-        Image = image;
+        Resolved = resolved;
         _logger = logger;
     }
 
     public string ContainerName { get; }
 
-    public string Image { get; }
+    public ResolvedSandbox Resolved { get; }
 
-    public string Description => $"an isolated container ({Image}); the repository is mounted at {_options.WorkDir}, which is the working directory";
+    public string Image => Resolved.Image;
+
+    public string Description
+        => $"an isolated container ({Image}, from {Resolved.Source}{(Resolved.Network == "none" ? ", no network access" : string.Empty)}); the repository is mounted at {_options.WorkDir}, which is the working directory";
 
     public async Task<ProcessResult> ExecuteAsync(ParsedCommand command, TimeSpan timeout, CancellationToken cancellationToken)
     {

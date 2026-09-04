@@ -108,10 +108,10 @@ public sealed class SandboxTests : IDisposable
     [Fact]
     public void BuildRunArguments_AppliesIsolationLimitsAndMount()
     {
-        var options = new SandboxOptions { Network = "none", Memory = "2g", Cpus = 1.5, PidsLimit = 128, User = "1000:1000", WorkDir = "/src" };
+        var options = new SandboxOptions { Network = "none", Memory = "2g", Cpus = 1.5, PidsLimit = 128, User = "1000:1000", WorkDir = "/src", DefaultImage = "img:1" };
         var workspace = Workspace();
 
-        var args = DockerSandbox.BuildRunArguments(options, workspace, "img:1", "agent-task-7-abc");
+        var args = DockerSandbox.BuildRunArguments(options, workspace, SandboxPolicy.Resolve(options, workspace.Profile), "agent-task-7-abc");
         var line = string.Join(' ', args);
 
         Assert.Equal("run", args[0]);
@@ -147,7 +147,8 @@ public sealed class SandboxTests : IDisposable
             TmpfsSize = string.Empty,
         };
 
-        var args = DockerSandbox.BuildRunArguments(options, Workspace(), "img", "c1");
+        var workspace = Workspace();
+        var args = DockerSandbox.BuildRunArguments(options, workspace, SandboxPolicy.Resolve(options, workspace.Profile), "c1");
         var line = string.Join(' ', args);
 
         Assert.Contains("agent-nuget:/root/.nuget/packages", args);
@@ -162,7 +163,7 @@ public sealed class SandboxTests : IDisposable
     [Fact]
     public void BuildEnvironment_ForcesQuietToolingAndSafeGitOwnership()
     {
-        var env = DockerSandbox.BuildEnvironment(new SandboxOptions());
+        var env = DockerSandbox.BuildEnvironment(null);
 
         Assert.Equal("1", env["CI"]);
         Assert.Equal("0", env["GIT_TERMINAL_PROMPT"]);
@@ -249,6 +250,39 @@ public sealed class SandboxTests : IDisposable
         await session.DisposeAsync();
 
         Assert.Equal(["rm", "--force", containerName], processes.Call(2).Arguments);
+    }
+
+    [Fact]
+    public async Task StartAsync_RepositoryProfile_ReachesTheDockerCommand()
+    {
+        var processes = new RecordingProcessRunner().Returns(0, "id");
+        var sandbox = Docker(processes, o =>
+        {
+            o.Profiles["node-chromium"] = new SandboxProfile { Image = "our-registry/node-chromium:22", Memory = "6g", Network = "none" };
+            o.MaxMemory = "8g";
+        });
+        var repo = new RepoProfile("npm ci", null, null, [], [], null, new RepoContainer(Profile: "node-chromium", Cpus: 3));
+
+        var session = await sandbox.StartAsync(Workspace(repo), TestContext.Current.CancellationToken);
+        var line = string.Join(' ', processes.Call(0).Arguments);
+
+        Assert.Contains("our-registry/node-chromium:22", line, StringComparison.Ordinal);
+        Assert.Contains("--memory 6g", line, StringComparison.Ordinal);
+        Assert.Contains("--network none", line, StringComparison.Ordinal);
+        Assert.Contains("--cpus 3", line, StringComparison.Ordinal);
+        Assert.Contains("no network access", session.Description, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task StartAsync_RepositoryAsksForADisallowedImage_FailsWithoutStartingAnything()
+    {
+        var processes = new RecordingProcessRunner();
+        var repo = new RepoProfile(null, null, null, [], [], null, new RepoContainer(Image: "docker.io/evil:latest"));
+
+        var ex = await Assert.ThrowsAsync<SandboxException>(() => Docker(processes).StartAsync(Workspace(repo), TestContext.Current.CancellationToken));
+
+        Assert.Contains("does not allow repositories to name images", ex.Message, StringComparison.Ordinal);
+        Assert.Empty(processes.Calls);
     }
 
     [Fact]

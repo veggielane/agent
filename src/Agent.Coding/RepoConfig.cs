@@ -1,16 +1,18 @@
+using Agent.Coding.Sandbox;
 using YamlDotNet.Serialization;
 using YamlDotNet.Serialization.NamingConventions;
 
 namespace Agent.Coding;
 
-/// <summary>What the repository tells us about itself: build/test/lint commands, extra policy, and guidance for the model.</summary>
+/// <summary>What the repository tells us about itself: build/test/lint commands, extra policy, the container it wants, and guidance for the model.</summary>
 public sealed record RepoProfile(
     string? BuildCommand,
     string? TestCommand,
     string? LintCommand,
     IReadOnlyList<string> ExtraAllowedExecutables,
     IReadOnlyList<string> ExtraProtectedPaths,
-    string? Instructions)
+    string? Instructions,
+    RepoContainer? Container = null)
 {
     public static RepoProfile Empty { get; } = new(null, null, null, [], [], null);
 
@@ -24,7 +26,12 @@ public sealed record RepoProfile(
 /// </summary>
 public static class RepoConfigLoader
 {
-    public const string ConfigPath = ".agent/config.yml";
+    /// <summary>Repository configuration file, in order of preference. The first one present wins.</summary>
+    public static readonly string[] ConfigPaths = [".engex.yml", ".engex.yaml", ".agent/config.yml", ".agent/config.yaml"];
+
+    /// <summary>The file teams are told to write. The others are accepted for compatibility.</summary>
+    public const string ConfigPath = ".engex.yml";
+
     public const string InstructionsFile = "AGENTS.md";
 
     private static readonly IDeserializer Yaml = new DeserializerBuilder()
@@ -35,10 +42,14 @@ public static class RepoConfigLoader
     public static RepoProfile Load(string repoRoot)
     {
         var configured = RepoProfile.Empty;
-        var configFile = Path.Combine(repoRoot, ConfigPath);
-        if (File.Exists(configFile))
+        foreach (var candidate in ConfigPaths)
         {
-            configured = ParseYaml(File.ReadAllText(configFile));
+            var configFile = Path.Combine(repoRoot, candidate.Replace('/', Path.DirectorySeparatorChar));
+            if (File.Exists(configFile))
+            {
+                configured = ParseYaml(File.ReadAllText(configFile));
+                break;
+            }
         }
 
         var detected = Detect(repoRoot);
@@ -63,7 +74,8 @@ public static class RepoConfigLoader
             Pick(configured.LintCommand, detected.LintCommand),
             configured.ExtraAllowedExecutables,
             configured.ExtraProtectedPaths,
-            string.IsNullOrWhiteSpace(instructions) ? null : instructions);
+            string.IsNullOrWhiteSpace(instructions) ? null : instructions,
+            configured.Container);
     }
 
     /// <summary>Parses the YAML document; unknown keys are ignored, malformed YAML yields the empty profile.</summary>
@@ -95,7 +107,32 @@ public static class RepoConfigLoader
             Clean(doc.Lint),
             CleanList(doc.AllowedExecutables),
             CleanList(doc.ProtectedPaths),
-            Clean(doc.Instructions));
+            Clean(doc.Instructions),
+            ToContainer(doc.Container));
+    }
+
+    private static RepoContainer? ToContainer(ContainerDocument? doc)
+    {
+        if (doc is null)
+        {
+            return null;
+        }
+
+        Dictionary<string, string>? env = null;
+        if (doc.Env is { Count: > 0 })
+        {
+            env = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var (key, value) in doc.Env)
+            {
+                if (!string.IsNullOrWhiteSpace(key))
+                {
+                    env[key.Trim()] = value ?? string.Empty;
+                }
+            }
+        }
+
+        var container = new RepoContainer(Clean(doc.Profile), Clean(doc.Image), Clean(doc.Memory), doc.Cpus, Clean(doc.Network), env);
+        return container.IsEmpty ? null : container;
     }
 
     /// <summary>Guesses build and test commands from well-known files at the repo root.</summary>
@@ -153,5 +190,22 @@ public static class RepoConfigLoader
         public List<string>? ProtectedPaths { get; set; }
 
         public string? Instructions { get; set; }
+
+        public ContainerDocument? Container { get; set; }
+    }
+
+    private sealed class ContainerDocument
+    {
+        public string? Profile { get; set; }
+
+        public string? Image { get; set; }
+
+        public string? Memory { get; set; }
+
+        public double? Cpus { get; set; }
+
+        public string? Network { get; set; }
+
+        public Dictionary<string, string>? Env { get; set; }
     }
 }

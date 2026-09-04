@@ -1,3 +1,5 @@
+using Agent.Coding.Sandbox;
+
 namespace Agent.Coding.Tests;
 
 public sealed class RepoConfigTests : IDisposable
@@ -118,5 +120,76 @@ public sealed class RepoConfigTests : IDisposable
 
         Assert.Null(profile.Instructions);
         Assert.Empty(profile.ExtraAllowedExecutables);
+        Assert.Null(profile.Container);
+    }
+
+    [Fact]
+    public void ParseYaml_ContainerBlock_Bound()
+    {
+        const string yaml = """
+            build: npm ci
+            container:
+              profile: node-chromium
+              memory: 6g
+              cpus: 4
+              network: none
+              env:
+                PUPPETEER_SKIP_DOWNLOAD: "1"
+            """;
+
+        var container = RepoConfigLoader.ParseYaml(yaml).Container;
+
+        Assert.NotNull(container);
+        Assert.Equal("node-chromium", container.Profile);
+        Assert.Equal("6g", container.Memory);
+        Assert.Equal(4, container.Cpus);
+        Assert.Equal("none", container.Network);
+        Assert.Equal("1", container.Env!["PUPPETEER_SKIP_DOWNLOAD"]);
+        Assert.Null(container.Image);
+    }
+
+    [Fact]
+    public void ParseYaml_EmptyContainerBlock_IsNoRequest()
+    {
+        Assert.Null(RepoConfigLoader.ParseYaml("container:\nbuild: make\n").Container);
+    }
+
+    [Fact]
+    public void Load_EngexYml_IsThePreferredFile()
+    {
+        _dir.Write(".engex.yml", "test: npm test\ncontainer:\n  profile: node\n");
+        _dir.Write(".agent/config.yml", "test: legacy\ncontainer:\n  profile: legacy\n");
+
+        var profile = RepoConfigLoader.Load(_dir.Path);
+
+        Assert.Equal("npm test", profile.TestCommand);
+        Assert.Equal("node", profile.Container!.Profile);
+    }
+
+    [Fact]
+    public void Load_EngexYaml_IsAlsoAccepted()
+    {
+        _dir.Write(".engex.yaml", "container:\n  image: our-registry/x:1\n");
+
+        Assert.Equal("our-registry/x:1", RepoConfigLoader.Load(_dir.Path).Container!.Image);
+    }
+
+    [Fact]
+    public void Load_LegacyAgentConfig_StillWorks()
+    {
+        _dir.Write(".agent/config.yml", "container:\n  profile: legacy\n");
+
+        Assert.Equal("legacy", RepoConfigLoader.Load(_dir.Path).Container!.Profile);
+    }
+
+    [Fact]
+    public void EngexFile_IsProtectedFromTheModel()
+    {
+        // The model must not be able to rewrite the policy it runs under.
+        var guard = new PathGuard(_dir.Path, CodingOptions.DefaultProtectedPaths);
+
+        Assert.True(guard.IsProtected(".engex.yml"));
+        Assert.True(guard.IsProtected(".engex.yaml"));
+        Assert.True(guard.IsProtected(".agent/config.yml"));
     }
 }

@@ -14,7 +14,7 @@ public sealed class CodingOptions
         ["git", "dotnet", "node", "npm", "npx", "make", "python", "python3", "pytest", "cargo", "go"];
 
     public static readonly string[] DefaultProtectedPaths =
-        [".gitlab-ci.yml", ".github/**", "**/*.pfx", "**/*.pem", "**/appsettings.Production.json", "deploy/**", ".agent/**"];
+        [".gitlab-ci.yml", ".github/**", "**/*.pfx", "**/*.pem", "**/appsettings.Production.json", "deploy/**", ".agent/**", ".engex.yml", ".engex.yaml"];
 
     /// <summary>Git sub-commands the model may run through the <c>run</c> tool. Branching, commit and push belong to the orchestrator.</summary>
     public static readonly string[] DefaultAllowedGitSubcommands =

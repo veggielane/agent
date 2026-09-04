@@ -1,0 +1,13 @@
+bin/
+obj/
+*.user
+*.suo
+.vs/
+.idea/
+TestResults/
+*.db
+*.db-*
+appsettings.*.local.json
+secrets.json
+workspaces/
+.env

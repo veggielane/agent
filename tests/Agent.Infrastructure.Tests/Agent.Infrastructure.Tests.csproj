@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Agent.Core\Agent.Core.csproj" />
+    <ProjectReference Include="..\..\src\Agent.Persistence\Agent.Persistence.csproj" />
+    <ProjectReference Include="..\..\src\Agent.Infrastructure.Keycloak\Agent.Infrastructure.Keycloak.csproj" />
+    <ProjectReference Include="..\..\src\Agent.Infrastructure.Ldap\Agent.Infrastructure.Ldap.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="xunit.v3" />
+    <PackageReference Include="xunit.runner.visualstudio" />
+    <PackageReference Include="NSubstitute" />
+    <PackageReference Include="WireMock.Net" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" />
+    <PackageReference Include="Microsoft.IdentityModel.JsonWebTokens" />
+  </ItemGroup>
+
+</Project>

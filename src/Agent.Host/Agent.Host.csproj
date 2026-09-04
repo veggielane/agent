@@ -1,0 +1,34 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <UserSecretsId>agent-host</UserSecretsId>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Agent.Core\Agent.Core.csproj" />
+    <ProjectReference Include="..\Agent.Coding\Agent.Coding.csproj" />
+    <ProjectReference Include="..\Agent.Mcp\Agent.Mcp.csproj" />
+    <ProjectReference Include="..\Agent.Infrastructure.Keycloak\Agent.Infrastructure.Keycloak.csproj" />
+    <ProjectReference Include="..\Agent.Infrastructure.Ldap\Agent.Infrastructure.Ldap.csproj" />
+    <ProjectReference Include="..\Agent.Persistence\Agent.Persistence.csproj" />
+    <ProjectReference Include="..\Agent.Channels.Mattermost\Agent.Channels.Mattermost.csproj" />
+    <ProjectReference Include="..\Agent.Channels.Jira\Agent.Channels.Jira.csproj" />
+    <ProjectReference Include="..\Agent.Channels.GitLab\Agent.Channels.GitLab.csproj" />
+    <ProjectReference Include="..\Agent.Worker\Agent.Worker.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" />
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="appsettings.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="appsettings.Development.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="prompts\**" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="commands\**" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="mcp\**" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,9 @@
+name: explain
+description: Explain a Jira or GitLab issue in plain language, using the tools to read it
+role: users
+model: AnswerModel
+tools: [jira_get_issue, gitlab_get_issue, gitlab_get_mr]
+prompt: |
+  Explain the following issue or merge request to a new team member: what is being asked, why it matters,
+  and what a sensible first step would be. Look it up with the tools if a key or reference is given.
+  Reference: {{issue}} {{args}}

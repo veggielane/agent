@@ -1,0 +1,11 @@
+name: summarize
+aliases: [tldr]
+description: Summarise the current thread, issue, or merge request
+role: users
+model: AnswerModel
+tools: [none]
+prompt: |
+  Summarise the discussion below in at most 5 bullet points, then list open questions or decisions still needed.
+  Extra guidance from the caller: {{args}}
+  ---
+  {{context}}

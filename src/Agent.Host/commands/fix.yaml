@@ -1,0 +1,10 @@
+name: fix
+aliases: [implement]
+description: Turn this issue into a coding task (opens a merge request when done)
+role: team
+kind: task
+channels: [gitlab, jira]
+prompt: |
+  {{context}}
+
+  Additional instructions from {{caller}}: {{args}}

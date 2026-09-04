@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>agent</AssemblyName>
+    <RootNamespace>Agent.Cli</RootNamespace>
+    <UserSecretsId>agent-cli</UserSecretsId>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Agent.Core\Agent.Core.csproj" />
+    <ProjectReference Include="..\Agent.Coding\Agent.Coding.csproj" />
+    <ProjectReference Include="..\Agent.Mcp\Agent.Mcp.csproj" />
+    <ProjectReference Include="..\Agent.Infrastructure.Keycloak\Agent.Infrastructure.Keycloak.csproj" />
+    <ProjectReference Include="..\Agent.Infrastructure.Ldap\Agent.Infrastructure.Ldap.csproj" />
+    <ProjectReference Include="..\Agent.Channels.Jira\Agent.Channels.Jira.csproj" />
+    <ProjectReference Include="..\Agent.Channels.GitLab\Agent.Channels.GitLab.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Spectre.Console" />
+    <PackageReference Include="Spectre.Console.Cli" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" />
+    <PackageReference Include="Microsoft.Extensions.Http" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.Json" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.EnvironmentVariables" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.UserSecrets" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Console" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="appsettings.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

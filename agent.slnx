@@ -1,0 +1,26 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Agent.Channels.GitLab/Agent.Channels.GitLab.csproj" />
+    <Project Path="src/Agent.Channels.Jira/Agent.Channels.Jira.csproj" />
+    <Project Path="src/Agent.Channels.Mattermost/Agent.Channels.Mattermost.csproj" />
+    <Project Path="src/Agent.Cli/Agent.Cli.csproj" />
+    <Project Path="src/Agent.Coding/Agent.Coding.csproj" />
+    <Project Path="src/Agent.Core/Agent.Core.csproj" />
+    <Project Path="src/Agent.Host/Agent.Host.csproj" />
+    <Project Path="src/Agent.Infrastructure.Keycloak/Agent.Infrastructure.Keycloak.csproj" />
+    <Project Path="src/Agent.Infrastructure.Ldap/Agent.Infrastructure.Ldap.csproj" />
+    <Project Path="src/Agent.Mcp/Agent.Mcp.csproj" />
+    <Project Path="src/Agent.Persistence/Agent.Persistence.csproj" />
+    <Project Path="src/Agent.Worker/Agent.Worker.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Agent.Channels.GitLab.Tests/Agent.Channels.GitLab.Tests.csproj" />
+    <Project Path="tests/Agent.Channels.Jira.Tests/Agent.Channels.Jira.Tests.csproj" />
+    <Project Path="tests/Agent.Channels.Mattermost.Tests/Agent.Channels.Mattermost.Tests.csproj" />
+    <Project Path="tests/Agent.Coding.Tests/Agent.Coding.Tests.csproj" />
+    <Project Path="tests/Agent.Core.Tests/Agent.Core.Tests.csproj" />
+    <Project Path="tests/Agent.Host.Tests/Agent.Host.Tests.csproj" />
+    <Project Path="tests/Agent.Infrastructure.Tests/Agent.Infrastructure.Tests.csproj" />
+    <Project Path="tests/Agent.Mcp.Tests/Agent.Mcp.Tests.csproj" />
+  </Folder>
+</Solution>

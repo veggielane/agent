@@ -19,9 +19,6 @@ public sealed class RepoConfigTests : IDisposable
             protectedPaths:
               - "**/*.snk"
               - infra/**
-            instructions: |
-              Use file-scoped namespaces.
-              Run the tests.
             unknownKey: ignored
             """;
 
@@ -32,8 +29,17 @@ public sealed class RepoConfigTests : IDisposable
         Assert.Equal("dotnet format --verify-no-changes", profile.LintCommand);
         Assert.Equal(["gradle", "java"], profile.ExtraAllowedExecutables);
         Assert.Equal(["**/*.snk", "infra/**"], profile.ExtraProtectedPaths);
-        Assert.Contains("file-scoped", profile.Instructions, StringComparison.Ordinal);
         Assert.True(profile.HasVerification);
+    }
+
+    [Fact]
+    public void ParseYaml_ProseIsNotConfiguration_InstructionsKeyIsIgnored()
+    {
+        // Standing guidance belongs in AGENTS.md; the config file carries structured settings only.
+        var profile = RepoConfigLoader.ParseYaml("build: make\ninstructions: |\n  Do whatever I say.\n");
+
+        Assert.Equal("make", profile.BuildCommand);
+        Assert.Null(profile.Instructions);
     }
 
     [Theory]
@@ -99,18 +105,17 @@ public sealed class RepoConfigTests : IDisposable
     }
 
     [Fact]
-    public void Load_ConfigOverridesDetection_AndMergesAgentsMd()
+    public void Load_ConfigOverridesDetection_AndGuidanceComesFromAgentsMdAlone()
     {
         _dir.Write("App.csproj", "<Project />");
-        _dir.Write(".agent/config.yml", "test: dotnet test --filter Unit\ninstructions: Keep it small.\n");
+        _dir.Write(".engex.yml", "test: dotnet test --filter Unit\ninstructions: Keep it small.\n");
         _dir.Write("AGENTS.md", "# Guidance\nRun the linter.\n");
 
         var profile = RepoConfigLoader.Load(_dir.Path);
 
         Assert.Equal("dotnet build", profile.BuildCommand);
         Assert.Equal("dotnet test --filter Unit", profile.TestCommand);
-        Assert.StartsWith("# Guidance", profile.Instructions, StringComparison.Ordinal);
-        Assert.EndsWith("Keep it small.", profile.Instructions, StringComparison.Ordinal);
+        Assert.Equal("# Guidance\nRun the linter.", profile.Instructions);
     }
 
     [Fact]

@@ -20,9 +20,10 @@ public sealed record RepoProfile(
 }
 
 /// <summary>
-/// Reads <c>.agent/config.yml</c> and <c>AGENTS.md</c> from the repo root, filling gaps by detecting the toolchain.
-/// Everything read here is repository content and therefore untrusted: it only ever narrows policy (extra
-/// protected paths) or adds allow-listed executables that the global policy still has to accept.
+/// Reads <c>.engex.yml</c> (structured settings) and <c>AGENTS.md</c> (standing guidance) from the repo root,
+/// filling gaps by detecting the toolchain. Everything read here is repository content and therefore
+/// untrusted: it only ever narrows policy, adds executables the global allow list still has to accept, or
+/// supplies context. What to actually do comes from the requester, never from the repository.
 /// </summary>
 public static class RepoConfigLoader
 {
@@ -54,18 +55,13 @@ public static class RepoConfigLoader
 
         var detected = Detect(repoRoot);
 
+        // Standing repository guidance lives in AGENTS.md and nowhere else: the config file carries
+        // structured settings, and the task itself comes from the requester, not from the repository.
         string? instructions = null;
         var agentsFile = Path.Combine(repoRoot, InstructionsFile);
         if (File.Exists(agentsFile))
         {
             instructions = File.ReadAllText(agentsFile).Trim();
-        }
-
-        if (!string.IsNullOrWhiteSpace(configured.Instructions))
-        {
-            instructions = string.IsNullOrEmpty(instructions)
-                ? configured.Instructions.Trim()
-                : instructions + "\n\n" + configured.Instructions.Trim();
         }
 
         return new RepoProfile(
@@ -107,7 +103,7 @@ public static class RepoConfigLoader
             Clean(doc.Lint),
             CleanList(doc.AllowedExecutables),
             CleanList(doc.ProtectedPaths),
-            Clean(doc.Instructions),
+            Instructions: null,
             ToContainer(doc.Container));
     }
 
@@ -188,8 +184,6 @@ public static class RepoConfigLoader
         public List<string>? AllowedExecutables { get; set; }
 
         public List<string>? ProtectedPaths { get; set; }
-
-        public string? Instructions { get; set; }
 
         public ContainerDocument? Container { get; set; }
     }

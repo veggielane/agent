@@ -82,6 +82,11 @@ With nothing in `.engex.yml`, the image comes from the repository's build comman
 rust) and then `DefaultImage`. The agent cannot edit `.engex.yml`: it is protected, so a task cannot rewrite
 the policy it runs under.
 
+**Three inputs, kept separate.** The task comes from the request, the ticket or mention that started it, and
+only from there. `.engex.yml` holds structured settings: build and test commands, container, protected paths.
+`AGENTS.md` holds standing repository conventions, the things that would otherwise be rediscovered on every
+task. Neither repository file can tell the agent what work to do.
+
 Prerequisites on the worker: Linux containers, and **`Coding:WorkspaceRoot` must be a directory the Docker
 daemon is allowed to bind-mount**. On Docker Desktop that means adding it under Settings → Resources → File
 sharing (or using the WSL2 backend with a path inside WSL); an unshared path makes `docker run` hang rather

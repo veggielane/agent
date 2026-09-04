@@ -1,6 +1,10 @@
 # AGENTS.md (example — copy to the root of a repository the agent works on)
 
-Guidance the coding agent reads before touching this repository. Keep it short and concrete.
+Standing context about how this repository works, read before every task. Keep it short and concrete.
+
+This is not the place to describe work you want done: the task comes from the ticket or the mention that
+starts it. Write down only what would otherwise have to be rediscovered, or repeated in every ticket.
+Structured settings (build and test commands, container, protected paths) go in `.engex.yml` instead.
 
 ## Build and test
 

@@ -477,7 +477,7 @@ orchestrator on the host, so **the container never sees a git credential**.
 
 #### 6.9.1 `.engex.yml` — what a repository may ask for
 
-A repository declares its own build, policy, guidance, and **container** in `.engex.yml` at its root
+A repository declares its own build, policy, and **container** in `.engex.yml` at its root
 (`.engex.yaml` and the older `.agent/config.yml` are also accepted; the first one found wins):
 
 ```yaml
@@ -489,9 +489,13 @@ container:
   network: none
 allowedExecutables: [pwsh]
 protectedPaths: [deploy/**]
-instructions: |
-  Run the tests for the project you changed.
 ```
+
+Three sources feed a run and they are deliberately separate. **The task** comes from the requester
+(ticket, mention, follow-up) and only from there. **`.engex.yml`** carries structured settings: how the
+project builds, the container it needs, what the agent may touch. **`AGENTS.md`** carries standing
+repository conventions, the things that would otherwise be rediscovered every task or repeated in every
+ticket. Prose never goes in the YAML, and neither repository file can tell the agent what work to do.
 
 The file is **repository content, so it is a request, not a decision**: anyone who can open a merge
 request can edit it, and a container image is arbitrary code on the worker. `SandboxPolicy` grants
@@ -892,11 +896,11 @@ Mattermost, in-process MCP servers over pipes, local bare git repositories for t
 | Mattermost (WebSocket, threads, DMs, reactions, splitting) | `Agent.Channels.Mattermost` | 116 |
 | Jira DC (polling, wiki formatter, tools, repo resolver) | `Agent.Channels.Jira` | 164 |
 | GitLab (to-do polling, labelled issues, MR publisher, tools) | `Agent.Channels.GitLab` | 149 |
-| Coding engine + worker (workspace, git, tools, budgets, MR flow, container sandbox, `.engex.yml` policy) | `Agent.Coding`, `Agent.Worker` | 218 |
+| Coding engine + worker (workspace, git, tools, budgets, MR flow, container sandbox, `.engex.yml` policy) | `Agent.Coding`, `Agent.Worker` | 219 |
 | Persistence (EF Core, SQL Server migration), Keycloak, LDAP | `Agent.Persistence`, `Agent.Infrastructure.*` | 60 |
 | MCP client, governance, `!mcp` | `Agent.Mcp` | 124 |
 | Host API (JWT bearer, chat/SSE, tasks) and CLI remote backend | `Agent.Host`, `Agent.Cli` | 18 |
-| **Total** | | **967, all passing** |
+| **Total** | | **968, all passing** |
 
 Milestone mapping: M0–M8 are implemented, plus the M9 per-task **container sandbox** (6.9;
 `Coding:Sandbox:Mode = Docker`, default stays `Process`) and per-repository containers through `.engex.yml`

@@ -1,5 +1,9 @@
 # .engex.yml — copy to the root of a repository the agent works on.
 #
+# Structured settings only: how this project builds, where it runs, what the agent may touch.
+# Prose belongs in AGENTS.md, and what to actually do comes from the ticket or the mention that
+# started the task — never from this file.
+#
 # Every key is optional. Without this file the agent detects dotnet/npm/make/pytest projects and
 # picks a container image from the build command. Add the file when your project needs something
 # more specific.
@@ -51,9 +55,5 @@ protectedPaths:
   - "**/*.snk"
   - src/Generated/**
 
-# ---------------------------------------------------------------- guidance
-# Prepended to the coding prompt. AGENTS.md is also read when present, and both are treated as
-# data rather than as instructions that override the agent's own rules.
-instructions: |
-  Run the tests for the project you changed before finishing.
-  Prefer extending existing abstractions over adding new ones.
+# Standing guidance about this repository ("the Legacy folder is vendored, don't refactor it")
+# goes in AGENTS.md next to this file, not here.

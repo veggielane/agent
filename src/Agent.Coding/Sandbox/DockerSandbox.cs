@@ -238,9 +238,19 @@ public sealed class DockerSandbox : ISandbox, IStatusContributor
         return env;
     }
 
-    public static IReadOnlyList<string> BuildExecArguments(SandboxOptions options, string containerName, ParsedCommand command, TimeSpan timeout)
+    public static IReadOnlyList<string> BuildExecArguments(SandboxOptions options, string containerName, ParsedCommand command, TimeSpan timeout, IReadOnlyDictionary<string, string>? environment = null)
     {
-        var args = new List<string> { "exec", "--workdir", options.WorkDir, containerName };
+        var args = new List<string> { "exec", "--workdir", options.WorkDir };
+        if (environment is not null)
+        {
+            foreach (var (key, value) in environment.Where(e => !string.IsNullOrWhiteSpace(e.Key)))
+            {
+                args.Add("--env");
+                args.Add($"{key.Trim()}={value}");
+            }
+        }
+
+        args.Add(containerName);
         if (options.UseTimeoutWrapper && timeout > TimeSpan.Zero)
         {
             args.Add("timeout");
@@ -284,11 +294,14 @@ public sealed class DockerSandboxSession : ISandboxSession
 
     public string Mode => "docker";
 
-    public async Task<ProcessResult> ExecuteAsync(ParsedCommand command, TimeSpan timeout, CancellationToken cancellationToken)
+    public string PathInSandbox(string relativePath)
+        => _options.WorkDir.TrimEnd('/') + "/" + relativePath.Replace('\\', '/').TrimStart('/');
+
+    public async Task<ProcessResult> ExecuteAsync(ParsedCommand command, TimeSpan timeout, CancellationToken cancellationToken, IReadOnlyDictionary<string, string>? environment = null)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
-        var args = DockerSandbox.BuildExecArguments(_options, ContainerName, command, timeout);
+        var args = DockerSandbox.BuildExecArguments(_options, ContainerName, command, timeout, environment);
         var hostTimeout = timeout > TimeSpan.Zero ? timeout + TimeSpan.FromSeconds(15) : timeout;
         var result = await _processes.RunAsync(_options.DockerPath, args, _workspace.RepoPath, null, hostTimeout, cancellationToken).ConfigureAwait(false);
 

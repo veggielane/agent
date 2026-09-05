@@ -28,8 +28,11 @@ public sealed class ProcessSandboxSession : ISandboxSession
 
     public string Mode => "process";
 
-    public Task<ProcessResult> ExecuteAsync(ParsedCommand command, TimeSpan timeout, CancellationToken cancellationToken)
-        => _processes.RunAsync(command.Executable, command.Arguments, _workspace.RepoPath, null, timeout, cancellationToken);
+    public Task<ProcessResult> ExecuteAsync(ParsedCommand command, TimeSpan timeout, CancellationToken cancellationToken, IReadOnlyDictionary<string, string>? environment = null)
+        => _processes.RunAsync(command.Executable, command.Arguments, _workspace.RepoPath, environment, timeout, cancellationToken);
+
+    public string PathInSandbox(string relativePath)
+        => Path.GetFullPath(Path.Combine(_workspace.RepoPath, relativePath.Replace('/', Path.DirectorySeparatorChar)));
 
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 }

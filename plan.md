@@ -127,8 +127,10 @@ Principles:
 | **A. Native loop in .NET** (recommended) | Full control of tools, budgets, audit, and sandboxing; no extra runtime; authz and secrets stay in our process. | We build and tune the edit/search/run tools and context management ourselves. |
 | B. Orchestrate an external coding CLI (e.g. aider, opencode, Codex CLI) pointed at the OpenAI-compatible endpoint | Mature editing behaviour on day one. | Extra runtime + config drift; harder to enforce budgets/allow-lists; agent quality depends on a third-party tool's support for our endpoint. |
 
-Plan: build A behind an `ICodingEngine` interface, with a small tool set (6.8). If quality falls
-short, B can be plugged in as another `ICodingEngine` without touching the pipeline.
+**Both are implemented**, selected by `Coding:Engine` (`Native` by default, `OpenCode` for the CLI). The
+pipeline, workspace, git, verification and merge-request publishing are identical either way; only the loop
+in the middle differs. 6.8.1 covers what the orchestrator can still guarantee when the loop belongs to
+somebody else, and what it cannot.
 
 ### 4.2 Tech stack
 
@@ -430,6 +432,40 @@ branches.
   ```
 
   Missing config → sensible detection (`*.sln` → dotnet, `package.json` → npm, `Makefile` → make).
+
+#### 6.8.1 The opencode engine (`Coding:Engine = OpenCode`)
+
+Instead of running our own loop, the agent hands the task to the **opencode** CLI inside the same sandbox
+and keeps everything around it: clone, branch, verification, commit, push, merge request. opencode never
+sees a git credential and never commits, exactly as with the native engine.
+
+What the orchestrator still guarantees, and how:
+
+| Guarantee | How it survives the handover |
+|-----------|------------------------------|
+| Isolation | The same sandbox (6.9). opencode runs as a command inside it, so the container is the outer boundary. |
+| Executable allow list | Translated into opencode's `permission.bash` rules: catch-all `deny`, then an `allow` per allowed executable, then `deny` for `git commit`, `push`, `reset`, `checkout`, `rebase` and `config`, which win because later rules take precedence. |
+| Protected paths | Translated into `permission.edit` deny rules, **and** re-checked against `git status` after the run. A protected file that changed fails the task and is never published. |
+| Wall-clock budget | `Budget.MaxMinutes` becomes the command timeout. |
+| Verification | Run by us afterwards; a failure is fed back with `opencode run --continue`, bounded by `Budget.MaxVerifyRetries`. |
+| No prompting | `permission.question` is denied and `--auto` is passed, so a non-interactive run cannot hang waiting for input. |
+| Telemetry | The same `agent.coding.run` span, tagged `agent.coding.engine=opencode`. |
+
+What is genuinely lost, and should decide whether you use it:
+
+- **Turn, token and run-count budgets.** opencode owns the loop, so only the wall clock is enforceable.
+  Token counts are best-effort, scraped from `--format json`, and may be zero.
+- **Per-command policy at our layer.** The bash rules are enforced *by opencode*, not by us. In `Docker`
+  mode the container is still a hard boundary; in `Process` mode it is the only barrier, so the engine logs
+  a warning on every run. Treat `Docker` as required in practice.
+- **The API key enters the sandbox.** opencode has to call the model, so the key is passed per command as an
+  environment variable. On the container path it is visible in the `docker exec` arguments.
+
+Configuration is generated per run into `opencode.agent.json` at the repository root, pointed at by
+`OPENCODE_CONFIG`, added to `.git/info/exclude` so it can never be committed, and deleted afterwards. It
+declares the team endpoint as an `@ai-sdk/openai-compatible` provider, pins the coding model, lists
+`AGENTS.md` under `instructions`, and carries the permission block above. A missing `opencode` binary fails
+the task with a message naming the fix rather than silently falling back to the native loop.
 
 ### 6.9 Workspace and sandboxing
 
@@ -935,11 +971,11 @@ Mattermost, in-process MCP servers over pipes, local bare git repositories for t
 | Mattermost (WebSocket, threads, DMs, reactions, splitting) | `Agent.Channels.Mattermost` | 116 |
 | Jira DC (polling, wiki formatter, tools, repo resolver) | `Agent.Channels.Jira` | 164 |
 | GitLab (to-do polling, labelled issues, MR publisher, tools) | `Agent.Channels.GitLab` | 149 |
-| Coding engine + worker (workspace, git, tools, budgets, MR flow, container sandbox, `.engex.yml` policy) | `Agent.Coding`, `Agent.Worker` | 219 |
+| Coding engine + worker (native and opencode engines, workspace, git, budgets, MR flow, container sandbox, `.engex.yml` policy) | `Agent.Coding`, `Agent.Worker` | 241 |
 | Persistence (EF Core, SQL Server migration), Keycloak, LDAP | `Agent.Persistence`, `Agent.Infrastructure.*` | 60 |
 | MCP client, governance, `!mcp` | `Agent.Mcp` | 124 |
 | Host API (JWT bearer, chat/SSE, tasks) and CLI remote backend | `Agent.Host`, `Agent.Cli` | 18 |
-| **Total** | | **979, all passing** |
+| **Total** | | **1001, all passing** |
 
 Milestone mapping: M0–M8 are implemented, plus the M9 per-task **container sandbox** (6.9;
 `Coding:Sandbox:Mode = Docker`, default stays `Process`) and per-repository containers through `.engex.yml`

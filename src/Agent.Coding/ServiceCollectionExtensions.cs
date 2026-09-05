@@ -29,6 +29,7 @@ public static class ServiceCollectionExtensions
 
                 // Raw docker arguments are positional and may legitimately repeat ("--dns a --dns b").
                 ReplaceIfConfigured(sandbox, nameof(SandboxOptions.ExtraArgs), options.Sandbox.ExtraArgs, distinct: false);
+                ReplaceIfConfigured(section.GetSection(nameof(CodingOptions.OpenCode)), nameof(OpenCode.OpenCodeOptions.ExtraArgs), options.OpenCode.ExtraArgs, distinct: false);
             });
 
         services.AddLogging();
@@ -41,7 +42,9 @@ public static class ServiceCollectionExtensions
         services.TryAddSingleton<ISandbox, SandboxSelector>();
         services.AddSingleton<IStatusContributor>(sp => sp.GetRequiredService<DockerSandbox>());
 
-        services.TryAddSingleton<ICodingEngine, CodingEngine>();
+        services.TryAddSingleton<CodingEngine>();
+        services.TryAddSingleton<OpenCode.OpenCodeCodingEngine>();
+        services.TryAddSingleton<ICodingEngine, CodingEngineSelector>();
         return services;
     }
 

@@ -50,6 +50,9 @@ public sealed class FakeSandbox : ISandbox
 
     public FakeSandboxSession? Session { get; private set; }
 
+    /// <summary>Scripted per-command responses handed to the session when it is created.</summary>
+    public Func<ParsedCommand, ProcessResult>? Handler { get; set; }
+
     public Task<ISandboxSession> StartAsync(Workspace workspace, CancellationToken cancellationToken)
     {
         if (_startFailure is not null)
@@ -57,7 +60,7 @@ public sealed class FakeSandbox : ISandbox
             throw _startFailure;
         }
 
-        Session = new FakeSandboxSession();
+        Session = new FakeSandboxSession { Handler = Handler };
         return Task.FromResult<ISandboxSession>(Session);
     }
 }
@@ -66,18 +69,29 @@ public sealed class FakeSandboxSession : ISandboxSession
 {
     public List<string> Commands { get; } = [];
 
+    public List<IReadOnlyDictionary<string, string>?> Environments { get; } = [];
+
+    public List<TimeSpan> Timeouts { get; } = [];
+
     public bool Disposed { get; private set; }
 
     public ProcessResult Result { get; set; } = new(0, "sandbox output", string.Empty, false);
+
+    /// <summary>Scripted per-command responses; falls back to <see cref="Result"/>.</summary>
+    public Func<ParsedCommand, ProcessResult>? Handler { get; set; }
 
     public string Description => "a fake container";
 
     public string Mode => "fake";
 
-    public Task<ProcessResult> ExecuteAsync(ParsedCommand command, TimeSpan timeout, CancellationToken cancellationToken)
+    public string PathInSandbox(string relativePath) => "/work/" + relativePath.Replace('\\', '/');
+
+    public Task<ProcessResult> ExecuteAsync(ParsedCommand command, TimeSpan timeout, CancellationToken cancellationToken, IReadOnlyDictionary<string, string>? environment = null)
     {
         Commands.Add(command.ToString());
-        return Task.FromResult(Result);
+        Environments.Add(environment);
+        Timeouts.Add(timeout);
+        return Task.FromResult(Handler?.Invoke(command) ?? Result);
     }
 
     public ValueTask DisposeAsync()

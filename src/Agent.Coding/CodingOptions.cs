@@ -1,3 +1,4 @@
+using Agent.Coding.OpenCode;
 using Agent.Coding.Sandbox;
 
 namespace Agent.Coding;
@@ -28,6 +29,11 @@ public sealed class CodingOptions
     public string EffectiveWorkspaceRoot => string.IsNullOrWhiteSpace(WorkspaceRoot) ? DefaultWorkspaceRoot : WorkspaceRoot;
 
     public int MaxConcurrentTasks { get; set; } = 2;
+
+    /// <summary>Which agent loop does the work: the built-in one, or the opencode CLI.</summary>
+    public CodingEngineKind Engine { get; set; } = CodingEngineKind.Native;
+
+    public OpenCodeOptions OpenCode { get; set; } = new();
 
     public CodingBudgetOptions Budget { get; set; } = new();
 

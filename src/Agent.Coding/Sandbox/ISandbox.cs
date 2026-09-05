@@ -18,7 +18,17 @@ public interface ISandboxSession : IAsyncDisposable
     string Mode { get; }
 
     /// <summary>Runs an already policy-checked command in the repository directory.</summary>
-    Task<ProcessResult> ExecuteAsync(ParsedCommand command, TimeSpan timeout, CancellationToken cancellationToken);
+    /// <param name="environment">
+    /// Extra environment for this command only. Never put credentials here: on the container path these
+    /// values appear on the docker command line.
+    /// </param>
+    Task<ProcessResult> ExecuteAsync(ParsedCommand command, TimeSpan timeout, CancellationToken cancellationToken, IReadOnlyDictionary<string, string>? environment = null);
+
+    /// <summary>
+    /// Translates a repository-relative path into the absolute path a command sees inside the sandbox:
+    /// the host path for a process, the mount point for a container.
+    /// </summary>
+    string PathInSandbox(string relativePath);
 }
 
 public sealed class SandboxException : Exception

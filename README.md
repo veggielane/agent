@@ -34,6 +34,36 @@ dotnet run
 `Persistence:ConnectionString` the host keeps tasks and cursors in memory (fine for trying things out).
 `Api:Enabled=false` runs the process as a pure worker with no HTTP listener.
 
+### Choosing the coding engine
+
+`Coding:Engine` selects which loop does the work. Everything around it, the clone, branch, verification,
+commit, push and merge request, is the same either way.
+
+| Engine | What it is |
+|---|---|
+| `Native` (default) | The built-in loop: our own file, search, edit and run tools, with turn, token, time and run-count budgets enforced by us. |
+| `OpenCode` | Hands the task to the [opencode](https://opencode.ai) CLI running inside the sandbox. |
+
+```jsonc
+"Coding": {
+  "Engine": "OpenCode",
+  "Sandbox": { "Mode": "Docker" },        // strongly recommended with an external agent
+  "OpenCode": { "ExecutablePath": "opencode", "Agent": "", "AllowWebAccess": false }
+}
+```
+
+The agent generates opencode's config per run, so your policy survives the handover: allowed executables
+become `permission.bash` rules, protected paths become `permission.edit` denials and are re-checked against
+`git status` afterwards, committing and pushing are denied, and interactive questions are refused so a
+headless run cannot hang. Verification still runs on our side and failures are fed back with
+`opencode run --continue`.
+
+Three things to know before switching. Only the wall-clock budget is enforceable, because opencode owns the
+loop, and token counts become best-effort. The bash rules are enforced by opencode rather than by us, so the
+container is the real boundary and `Process` mode logs a warning on every run. And the LLM API key must enter
+the sandbox for opencode to call the model. The binary has to be present where commands run: install it on
+the worker for `Process` mode, or bake it into the image for `Docker`.
+
 ### Running coding tasks in a container
 
 By default the model's commands run as child processes on the worker host. To isolate each task in its own

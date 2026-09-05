@@ -28,7 +28,8 @@ public sealed class ServiceRegistrationTests
         using var provider = services.BuildServiceProvider();
 
         Assert.IsType<TaskRunner>(provider.GetRequiredService<ITaskRunner>());
-        Assert.IsType<CodingEngine>(provider.GetRequiredService<ICodingEngine>());
+        Assert.IsType<CodingEngineSelector>(provider.GetRequiredService<ICodingEngine>());
+        Assert.Equal(CodingEngineKind.Native, ((CodingEngineSelector)provider.GetRequiredService<ICodingEngine>()).Current);
         Assert.IsType<WorkspaceManager>(provider.GetRequiredService<IWorkspaceManager>());
         Assert.Contains(provider.GetServices<IHostedService>(), s => s is TaskWorker);
         Assert.Contains(provider.GetServices<IStatusContributor>(), s => s is TaskWorker);
@@ -69,6 +70,28 @@ public sealed class ServiceRegistrationTests
         Assert.Equal(5, options.Budget.MaxTurns);
         Assert.True(options.OpenAsDraft);
         Assert.Equal(CodingOptions.DefaultAllowedGitSubcommands, options.AllowedGitSubcommands);
+    }
+
+    [Fact]
+    public void AddAgentCoding_OpenCodeEngine_IsSelectedByConfiguration()
+    {
+        var config = Config(new Dictionary<string, string?>
+        {
+            ["Llm:BaseUrl"] = "http://llm.invalid/v1",
+            ["Llm:AnswerModel"] = "m",
+            ["Coding:Engine"] = "OpenCode",
+            ["Coding:OpenCode:ExecutablePath"] = "/usr/local/bin/opencode",
+            ["Coding:OpenCode:ExtraArgs:0"] = "--share",
+        });
+        using var provider = new ServiceCollection().AddAgentCore(config).AddAgentCoding(config).BuildServiceProvider();
+
+        var options = provider.GetRequiredService<IOptionsMonitor<CodingOptions>>().CurrentValue;
+        var engine = (CodingEngineSelector)provider.GetRequiredService<ICodingEngine>();
+
+        Assert.Equal(CodingEngineKind.OpenCode, options.Engine);
+        Assert.Equal(CodingEngineKind.OpenCode, engine.Current);
+        Assert.Equal("/usr/local/bin/opencode", options.OpenCode.ExecutablePath);
+        Assert.Equal(["--share"], options.OpenCode.ExtraArgs);
     }
 
     [Fact]

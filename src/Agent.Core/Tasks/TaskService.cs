@@ -1,4 +1,6 @@
+using System.Diagnostics;
 using Agent.Core.Authorization;
+using Agent.Core.Observability;
 using Microsoft.Extensions.Logging;
 
 namespace Agent.Core.Tasks;
@@ -65,6 +67,13 @@ public sealed class TaskService : ITaskService
         {
             _signal.Signal();
         }
+
+        AgentTelemetry.Tasks.Add(1, new TagList
+        {
+            { "transition", "created" },
+            { "source", task.Source.ToString() },
+            { "status", task.Status.ToString() },
+        });
 
         _logger.LogInformation("Task {Task} created ({Status})", task.DisplayRef, task.Status);
         return task;
@@ -151,6 +160,17 @@ public sealed class TaskService : ITaskService
         task.Status = merged ? AgentTaskStatus.Done : AgentTaskStatus.Closed;
         await _store.UpdateAsync(task, cancellationToken).ConfigureAwait(false);
         await _store.AddEventAsync(new TaskEvent(task.Id, DateTimeOffset.UtcNow, merged ? "merged" : "closed", merged ? "Merge request merged" : "Merge request closed"), cancellationToken).ConfigureAwait(false);
+
+        AgentTelemetry.Tasks.Add(1, new TagList
+        {
+            { "transition", merged ? "merged" : "closed" },
+            { "source", task.Source.ToString() },
+            { "status", task.Status.ToString() },
+        });
+        AgentTelemetry.TaskDuration.Record(
+            (DateTimeOffset.UtcNow - task.CreatedAt).TotalSeconds,
+            new TagList { { "outcome", task.Status.ToString() }, { "source", task.Source.ToString() } });
+
         return task;
     }
 

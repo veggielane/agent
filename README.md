@@ -104,6 +104,36 @@ Runtime files next to the binary:
 | `commands/*.yaml` | Prompt-template `!commands`, hot-reloaded |
 | `mcp/*.json` | MCP server definitions, hot-reloaded |
 
+## Observability
+
+Traces, metrics, and logs are emitted with OpenTelemetry. Point it at a collector:
+
+```jsonc
+"Telemetry": {
+  "OtlpEndpoint": "http://otel-collector:4317",   // or set OTEL_EXPORTER_OTLP_ENDPOINT
+  "OtlpProtocol": "grpc",                          // or httpprotobuf for port 4318
+  "ConsoleExporter": false                         // true prints everything locally
+}
+```
+
+With no endpoint the agent still records everything internally and ships nothing, so the instrumentation
+is safe to leave enabled. A question produces one `agent.event` span with the command, model call, and tool
+calls nested under it, alongside spans for outbound HTTP and SQL.
+
+The metrics worth alerting on:
+
+| Instrument | Watch for |
+|---|---|
+| `agent.polls` | **Silence.** A healthy poll that finds nothing still increments, so no data means a dead poller. |
+| `agent.queue.depth` | A backlog that does not drain. |
+| `agent.events` by `outcome` | A rising `error` share. |
+| `agent.tokens` by `channel` and `purpose` | Cost attribution and runaway spend. |
+| `agent.tasks` by `stop_reason` | Budget exhaustion, or verification failing repeatedly. |
+| `agent.sandbox.commands` by `outcome` | Timeouts, which usually mean a wedged container. |
+
+Spans carry identifiers, roles, counts, and outcomes, never message text or file contents. Prompts and
+completions are recorded only if you set `Llm:EnableSensitiveTelemetry`.
+
 ## Use the CLI
 
 ```bash

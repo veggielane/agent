@@ -1,8 +1,10 @@
+using System.Diagnostics;
 using Agent.Core.Agent;
 using Agent.Core.Authorization;
 using Agent.Core.Commands;
 using Agent.Core.Conversations;
 using Agent.Core.Events;
+using Agent.Core.Observability;
 using Agent.Core.Replies;
 using Agent.Core.Tasks;
 using Microsoft.Extensions.Logging;
@@ -79,17 +81,34 @@ public sealed class InboundProcessor : IInboundProcessor
         if (!await _processed.TryMarkProcessedAsync(evt.Channel, evt.EventId, cancellationToken).ConfigureAwait(false))
         {
             _logger.LogDebug("Skipping already processed {Channel}:{EventId}", evt.Channel, evt.EventId);
+            AgentTelemetry.EventsSkipped.Add(1, new KeyValuePair<string, object?>("channel", evt.Channel.ToString()));
             return;
         }
 
+        using var activity = AgentTelemetry.Source.StartActivity("agent.event", ActivityKind.Consumer);
+        activity
+            .Tag("agent.channel", evt.Channel.ToString())
+            .Tag("agent.event.kind", evt.Kind.ToString())
+            .Tag("agent.event.id", evt.EventId)
+            .Tag("agent.conversation.id", evt.ConversationId)
+            .Tag("agent.private", evt.IsPrivate);
+
+        var started = Stopwatch.GetTimestamp();
+        var outcome = "unknown";
+
         var caller = await _roles.ResolveAsync(evt.Caller, cancellationToken).ConfigureAwait(false);
         evt = evt with { Caller = caller };
+        activity
+            .Tag("agent.caller", caller.DisplayName)
+            .Tag("agent.caller.roles", string.Join(",", caller.Roles.Order()));
+
         using var scope = RequestContext.Begin(caller, evt);
 
         try
         {
             if (_commands.IsCommand(evt.Text))
             {
+                outcome = "command";
                 await HandleCommandAsync(evt, caller, cancellationToken).ConfigureAwait(false);
                 return;
             }
@@ -97,26 +116,45 @@ public sealed class InboundProcessor : IInboundProcessor
             switch (evt.Kind)
             {
                 case InboundKind.TaskRequest:
+                    outcome = "task";
                     await HandleTaskRequestAsync(evt, caller, cancellationToken).ConfigureAwait(false);
                     break;
                 case InboundKind.FollowUp:
+                    outcome = "follow-up";
                     await HandleFollowUpAsync(evt, caller, cancellationToken).ConfigureAwait(false);
                     break;
                 default:
+                    outcome = "answer";
                     await HandleQuestionAsync(evt, caller, cancellationToken).ConfigureAwait(false);
                     break;
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
+            outcome = "cancelled";
             throw;
         }
         catch (Exception ex)
         {
+            outcome = "error";
+            activity.Failed(ex);
             var reference = Guid.NewGuid().ToString("N")[..6];
+            activity.Tag("agent.error.reference", reference);
             _logger.LogError(ex, "Processing {Channel}:{EventId} failed (ref {Ref})", evt.Channel, evt.EventId, reference);
             await _replies.AcknowledgeAsync(evt, AckState.Failed, ex.Message, CancellationToken.None).ConfigureAwait(false);
             await SafeReplyAsync(evt, $"Sorry, something went wrong (ref {reference}).", CancellationToken.None).ConfigureAwait(false);
+        }
+        finally
+        {
+            var tags = new TagList
+            {
+                { "channel", evt.Channel.ToString() },
+                { "kind", evt.Kind.ToString() },
+                { "outcome", outcome },
+            };
+            AgentTelemetry.Events.Add(1, tags);
+            AgentTelemetry.EventDuration.Record(Stopwatch.GetElapsedTime(started).TotalSeconds, tags);
+            activity.Tag("agent.outcome", outcome);
         }
     }
 

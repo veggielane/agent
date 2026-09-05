@@ -5,6 +5,14 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!--
+      The telemetry tests assert on ActivitySource and Meter, which are process-wide: a test running in
+      parallel would have its spans and measurements counted by another test's listener.
+    -->
+    <Content Include="xunit.runner.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="Microsoft.NET.Test.Sdk" />
     <PackageReference Include="xunit.v3" />
     <PackageReference Include="xunit.runner.visualstudio" />

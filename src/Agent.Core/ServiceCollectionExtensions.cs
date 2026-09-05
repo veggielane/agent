@@ -80,7 +80,12 @@ public static class ServiceCollectionExtensions
         // Pipeline
         services.TryAddSingleton<IProcessedEventStore, InMemoryProcessedEventStore>();
         services.TryAddSingleton<ICursorStore, InMemoryCursorStore>();
-        services.TryAddSingleton<IInboundQueue>(_ => new InboundQueue());
+        services.TryAddSingleton<IInboundQueue>(_ =>
+        {
+            var queue = new InboundQueue();
+            Observability.AgentTelemetry.TrackQueueDepth(() => queue.Depth);
+            return queue;
+        });
         services.TryAddSingleton<IInboundProcessor, InboundProcessor>();
 
         return services;

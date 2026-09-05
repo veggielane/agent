@@ -97,6 +97,13 @@ public sealed class JiraPoller : BackgroundService, IEventSource
             try
             {
                 delay = await PollOnceAsync(stoppingToken).ConfigureAwait(false);
+
+                // A healthy poll that found nothing still counts, so silence on this metric means broken.
+                Agent.Core.Observability.AgentTelemetry.Polls.Add(1, new System.Diagnostics.TagList
+                {
+                    { "channel", "Jira" },
+                    { "outcome", _backoff == TimeSpan.Zero ? "ok" : "error" },
+                });
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {

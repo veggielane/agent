@@ -72,6 +72,8 @@ public sealed class FakeSandboxSession : ISandboxSession
 
     public string Description => "a fake container";
 
+    public string Mode => "fake";
+
     public Task<ProcessResult> ExecuteAsync(ParsedCommand command, TimeSpan timeout, CancellationToken cancellationToken)
     {
         Commands.Add(command.ToString());

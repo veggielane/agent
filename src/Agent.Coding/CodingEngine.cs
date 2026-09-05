@@ -4,6 +4,7 @@ using Agent.Coding.Sandbox;
 using Agent.Core.Authorization;
 using Agent.Core.Channels;
 using Agent.Core.Llm;
+using Agent.Core.Observability;
 using Agent.Core.Pipeline;
 using Agent.Core.Prompts;
 using Agent.Core.Tools;
@@ -104,6 +105,13 @@ public sealed class CodingEngine : ICodingEngine
         var workspace = run.Workspace;
         var state = new CodingRunState();
 
+        using var runActivity = AgentTelemetry.Source.StartActivity("agent.coding.run", ActivityKind.Internal);
+        runActivity
+            .Tag("agent.task.id", workspace.TaskId)
+            .Tag("agent.branch", workspace.Branch)
+            .Tag("agent.base_branch", workspace.BaseBranch)
+            .Tag("agent.follow_up", run.IsFollowUp);
+
         ISandboxSession session;
         try
         {
@@ -116,11 +124,13 @@ public sealed class CodingEngine : ICodingEngine
         }
         catch (Exception ex)
         {
+            runActivity.Failed(ex);
             _logger.LogError(ex, "Could not start the {Sandbox} sandbox for task #{Task}", _sandbox.Name, workspace.TaskId);
             return Stopped(CodingStopReason.Error, $"The {_sandbox.Name} sandbox could not be started.", ex.Message);
         }
 
         await using var sandboxSession = session.ConfigureAwait(false);
+        runActivity.Tag("agent.sandbox.mode", session.Mode);
         _logger.LogInformation("Task #{Task} runs commands in {Sandbox}: {Description}", workspace.TaskId, _sandbox.Name, session.Description);
 
         var toolset = new CodingToolset(workspace, options, _processes, _git, state, _loggerFactory.CreateLogger<CodingToolset>(), session);
@@ -190,6 +200,7 @@ public sealed class CodingEngine : ICodingEngine
 
             turns++;
             tokens += response.Usage?.TotalTokenCount ?? 0;
+            AgentTelemetry.RecordTokens(response.Usage, nameof(ModelPurpose.Coding), "Coding", _clients.ResolveModel(ModelPurpose.Coding));
             messages.AddRange(response.Messages);
             CompactHistory(messages);
 
@@ -292,6 +303,20 @@ public sealed class CodingEngine : ICodingEngine
         {
             summary = "Cancelled before completion.";
         }
+
+        runActivity
+            .Tag("agent.stop_reason", (stop ?? CodingStopReason.Error).ToString())
+            .Tag("agent.turns", turns)
+            .Tag("agent.tokens", tokens)
+            .Tag("agent.verified", verified)
+            .Tag("agent.changed_files", changedFiles.Count);
+
+        AgentTelemetry.Tasks.Add(1, new TagList
+        {
+            { "transition", "coded" },
+            { "stop_reason", (stop ?? CodingStopReason.Error).ToString() },
+            { "verified", verified?.ToString() ?? "n/a" },
+        });
 
         _logger.LogInformation(
             "Coding run for task #{Task} stopped with {Stop} after {Turns} turns, {Tokens} tokens, {Elapsed:0}s; verified={Verified}",

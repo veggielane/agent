@@ -1,5 +1,6 @@
 using Agent.Host;
 using Agent.Host.Api;
+using Agent.Host.Observability;
 
 var bootstrap = new ConfigurationBuilder()
     .SetBasePath(AppContext.BaseDirectory)
@@ -17,6 +18,7 @@ if (apiEnabled)
     builder.Services.AddWindowsService(o => o.ServiceName = "TeamAgent");
     builder.WebHost.UseUrls(builder.Configuration.GetValue("Api:ListenUrl", "http://localhost:5080")!);
 
+    builder.Services.AddAgentObservability(builder.Configuration, builder.Logging);
     builder.Services.AddAgent(builder.Configuration);
     builder.Services.AddAgentApi(builder.Configuration);
 
@@ -29,6 +31,7 @@ else
 {
     var builder = Host.CreateApplicationBuilder(new HostApplicationBuilderSettings { Args = args, ContentRootPath = AppContext.BaseDirectory });
     builder.Services.AddWindowsService(o => o.ServiceName = "TeamAgent");
+    builder.Services.AddAgentObservability(builder.Configuration, builder.Logging);
     builder.Services.AddAgent(builder.Configuration);
 
     var host = builder.Build();

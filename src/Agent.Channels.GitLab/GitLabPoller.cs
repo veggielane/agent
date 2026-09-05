@@ -77,6 +77,14 @@ public sealed class GitLabPoller : BackgroundService, IEventSource
         while (!stoppingToken.IsCancellationRequested)
         {
             var ok = await PollOnceAsync(stoppingToken).ConfigureAwait(false);
+
+            // A healthy poll that found nothing still counts, so silence on this metric means broken.
+            Agent.Core.Observability.AgentTelemetry.Polls.Add(1, new System.Diagnostics.TagList
+            {
+                { "channel", "GitLab" },
+                { "outcome", ok ? "ok" : "error" },
+            });
+
             failures = ok ? 0 : failures + 1;
             var interval = TimeSpan.FromSeconds(Math.Max(1, _options.CurrentValue.PollSeconds));
             var delay = ok ? interval : Backoff(interval, failures);

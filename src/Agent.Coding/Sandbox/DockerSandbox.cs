@@ -282,6 +282,8 @@ public sealed class DockerSandboxSession : ISandboxSession
     public string Description
         => $"an isolated container ({Image}, from {Resolved.Source}{(Resolved.Network == "none" ? ", no network access" : string.Empty)}); the repository is mounted at {_options.WorkDir}, which is the working directory";
 
+    public string Mode => "docker";
+
     public async Task<ProcessResult> ExecuteAsync(ParsedCommand command, TimeSpan timeout, CancellationToken cancellationToken)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);

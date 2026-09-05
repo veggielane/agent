@@ -53,6 +53,13 @@ public sealed class OpenAIChatClientFactory : IChatClientFactory
                     o.MaximumIterationsPerRequest = options.MaxToolIterations;
                     o.IncludeDetailedErrors = true;
                 })
+
+                // Emits gen_ai spans and metrics. Prompts and completions stay out unless explicitly
+                // enabled, because they carry ticket and repository content.
+                .UseOpenTelemetry(
+                    _loggerFactory,
+                    Observability.AgentTelemetry.LlmActivitySourceName,
+                    o => o.EnableSensitiveData = options.EnableSensitiveTelemetry)
                 .Build();
         });
     }

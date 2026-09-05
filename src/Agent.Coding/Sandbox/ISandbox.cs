@@ -14,6 +14,9 @@ public interface ISandboxSession : IAsyncDisposable
     /// <summary>Human-readable description used in the system prompt and task events.</summary>
     string Description { get; }
 
+    /// <summary>Short identifier for logs and metrics: <c>process</c> or <c>docker</c>.</summary>
+    string Mode { get; }
+
     /// <summary>Runs an already policy-checked command in the repository directory.</summary>
     Task<ProcessResult> ExecuteAsync(ParsedCommand command, TimeSpan timeout, CancellationToken cancellationToken);
 }

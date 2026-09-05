@@ -1,4 +1,6 @@
+using System.Diagnostics;
 using Agent.Core.Audit;
+using Agent.Core.Observability;
 using Microsoft.Extensions.Logging;
 
 namespace Agent.Core.Authorization;
@@ -35,8 +37,21 @@ public sealed class AuthorizationService : IAuthorizationService
             result.Reason,
             resolved.Roles), cancellationToken).ConfigureAwait(false);
 
+        AgentTelemetry.Authorizations.Add(1, new TagList
+        {
+            { "action", action },
+            { "outcome", allowed ? "allow" : "deny" },
+            { "required", required.ToString() },
+            { "channel", resolved.Channel.ToString() },
+        });
+
         if (!allowed)
         {
+            Activity.Current?.AddEvent(new ActivityEvent("agent.authorization.denied", tags: new ActivityTagsCollection
+            {
+                { "agent.action", action },
+                { "agent.required.role", required.ToString() },
+            }));
             _logger.LogInformation("Denied {Action} for {Caller}: {Reason}", action, resolved.Key, result.Reason);
         }
 

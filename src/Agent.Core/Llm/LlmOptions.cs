@@ -46,6 +46,12 @@ public sealed class LlmOptions
 
     public float? Temperature { get; set; }
 
+    /// <summary>
+    /// Records prompts and completions on the gen_ai telemetry spans. Off by default: those carry ticket
+    /// and repository content, which does not belong in a tracing backend by accident.
+    /// </summary>
+    public bool EnableSensitiveTelemetry { get; set; }
+
     public string ResolveModel(ModelPurpose purpose, string? overrideKey = null, string? explicitModel = null)
     {
         if (!string.IsNullOrWhiteSpace(explicitModel))

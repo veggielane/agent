@@ -9,6 +9,7 @@ using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Hosting;
 using Microsoft.IdentityModel.JsonWebTokens;
 using Microsoft.IdentityModel.Tokens;
 
@@ -61,6 +62,10 @@ public sealed class AgentApiFactory : WebApplicationFactory<Program>
         builder.ConfigureTestServices(services =>
         {
             services.Replace(ServiceDescriptor.Singleton<IChatClientFactory>(Llm));
+
+            // These tests exercise the HTTP surface, not the background pipeline. Leaving the workers in
+            // means the task worker races each test, claiming queued tasks and trying to clone them.
+            services.RemoveAll<IHostedService>();
         });
     }
 

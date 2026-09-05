@@ -148,7 +148,7 @@ short, B can be plugged in as another `ICodingEngine` without touching the pipel
 | Formatting | `Markdig` (markdown AST) → per-channel renderers: Mattermost markdown, Jira wiki markup, GitLab markdown | |
 | CLI | `Spectre.Console` + `Spectre.Console.Cli`; SSE client for streaming | `agent login` (device flow); tokens cached per user (DPAPI on Windows, `0600` file on Linux). |
 | Configuration | `appsettings.json` + env vars + `dotnet user-secrets`; Options pattern with validation | Secrets from env or a vault in production. |
-| Observability | `Microsoft.Extensions.Logging` (+ optional OpenTelemetry exporter), health checks | Audit trail in SQL Server. |
+| Observability | **OpenTelemetry** traces, metrics and logs over OTLP (6.14); `Microsoft.Extensions.Logging`, health checks | Core emits through `ActivitySource`/`Meter` only; the host owns the SDK. Audit trail in SQL Server. |
 | Testing | xunit, NSubstitute, WireMock.Net, `Microsoft.AspNetCore.Mvc.Testing`, `Testcontainers.MsSql` | |
 | Build / CI / deploy | `dotnet` SDK pinned by `global.json`, central package management, GitLab CI; Windows service (`UseWindowsService`) or Linux systemd / container | |
 
@@ -715,6 +715,45 @@ credentials.
 }
 ```
 
+### 6.14 Observability (OpenTelemetry)
+
+The agent emits traces, metrics, and logs through **OpenTelemetry**. `Agent.Core` only *emits*: it depends
+on `ActivitySource` and `Meter` from the base class library, never on the OpenTelemetry SDK, so the host
+alone decides what is exported. With no collector configured the instrumentation still runs and ships
+nothing, which keeps it safe to leave in everywhere.
+
+**Traces.** One `agent.event` span per inbound message, with `agent.command`, `agent.answer`,
+`agent.tool`, `agent.coding.run`, and `agent.sandbox.command` beneath it. The chat client adds `gen_ai`
+spans through `Microsoft.Extensions.AI`'s own instrumentation, so a question links its model calls and
+tool calls in one trace. Outbound HTTP to Mattermost, Jira, GitLab, Keycloak, and the LLM endpoint is
+instrumented, as are ASP.NET Core requests and SQL Server calls. Health endpoints are excluded by default.
+
+**Metrics.** Named for the question each answers:
+
+| Instrument | Answers |
+|------------|---------|
+| `agent.events`, `agent.event.duration` | Throughput and latency per channel, kind, and outcome. |
+| `agent.events.skipped` | Idempotency drops, i.e. how often a poller re-sees the same item. |
+| `agent.authorizations` | Allow and deny counts by action and required role. |
+| `agent.commands`, `agent.command.duration` | Which `!commands` are used, and which fail. |
+| `agent.tokens` | Token spend by purpose, channel, model, and direction. Cost per channel is the question operators actually ask, which per-model `gen_ai` metrics cannot answer. |
+| `agent.tools`, `agent.tool.duration` | Tool usage and failures, including MCP servers by source. |
+| `agent.tasks`, `agent.task.duration` | Coding tasks by transition, stop reason, and whether verification passed. |
+| `agent.sandbox.commands` | Commands run per sandbox mode, and how many time out. |
+| `agent.polls` | Poll cycles per channel. A healthy poll that finds nothing still counts, so **silence on this metric means a broken poller**. |
+| `agent.queue.depth` | Backlog waiting for the pipeline. |
+
+**Logs** are exported through the OpenTelemetry logging provider with scopes, so a log line carries the
+trace id of the event that produced it.
+
+**Content stays out.** Spans carry identifiers, roles, counts, and outcomes, never message text, ticket
+bodies, or file contents. Prompts and completions reach the `gen_ai` spans only when
+`Llm:EnableSensitiveTelemetry` is turned on deliberately. Exceptions record their type, not their message.
+
+Configured under `Telemetry`: an OTLP endpoint (grpc or http/protobuf, with headers for a hosted backend),
+per-signal switches, a sample ratio, and a console exporter for development. The standard
+`OTEL_EXPORTER_OTLP_ENDPOINT` environment variable is honoured.
+
 ## 7. Security model
 
 The agent now executes commands and pushes code, so the threat model matters more than in v1.
@@ -892,7 +931,7 @@ Mattermost, in-process MCP servers over pipes, local bare git repositories for t
 
 | Component | Project | Tests |
 |-----------|---------|-------|
-| Core: pipeline, roles, commands, tools, tasks, LLM factory | `Agent.Core` | 118 |
+| Core: pipeline, roles, commands, tools, tasks, LLM factory, telemetry | `Agent.Core` | 129 |
 | Mattermost (WebSocket, threads, DMs, reactions, splitting) | `Agent.Channels.Mattermost` | 116 |
 | Jira DC (polling, wiki formatter, tools, repo resolver) | `Agent.Channels.Jira` | 164 |
 | GitLab (to-do polling, labelled issues, MR publisher, tools) | `Agent.Channels.GitLab` | 149 |
@@ -900,7 +939,7 @@ Mattermost, in-process MCP servers over pipes, local bare git repositories for t
 | Persistence (EF Core, SQL Server migration), Keycloak, LDAP | `Agent.Persistence`, `Agent.Infrastructure.*` | 60 |
 | MCP client, governance, `!mcp` | `Agent.Mcp` | 124 |
 | Host API (JWT bearer, chat/SSE, tasks) and CLI remote backend | `Agent.Host`, `Agent.Cli` | 18 |
-| **Total** | | **968, all passing** |
+| **Total** | | **979, all passing** |
 
 Milestone mapping: M0–M8 are implemented, plus the M9 per-task **container sandbox** (6.9;
 `Coding:Sandbox:Mode = Docker`, default stays `Process`) and per-repository containers through `.engex.yml`

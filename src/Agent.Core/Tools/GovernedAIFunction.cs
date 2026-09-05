@@ -1,5 +1,7 @@
+using System.Diagnostics;
 using System.Text.Json;
 using Agent.Core.Audit;
+using Agent.Core.Observability;
 using Agent.Core.Pipeline;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
@@ -52,6 +54,13 @@ public sealed class GovernedAIFunction : DelegatingAIFunction
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(_governance.Timeout);
 
+        using var activity = AgentTelemetry.Source.StartActivity("agent.tool", ActivityKind.Internal);
+        activity
+            .Tag("agent.tool", _name)
+            .Tag("agent.tool.source", _source)
+            .Tag("gen_ai.tool.name", _name);
+
+        var stopwatch = Stopwatch.GetTimestamp();
         object? result;
         string outcome;
         try
@@ -62,19 +71,31 @@ public sealed class GovernedAIFunction : DelegatingAIFunction
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
             outcome = "timeout";
+            activity?.SetStatus(ActivityStatusCode.Error, outcome);
+            RecordMetrics(outcome, stopwatch);
             await WriteAuditAsync(caller, outcome, started, argsText).ConfigureAwait(false);
             return $"Tool '{_name}' timed out after {_governance.Timeout.TotalSeconds:0}s.";
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             outcome = "error: " + ex.GetType().Name;
+            activity.Failed(ex);
+            RecordMetrics("error", stopwatch);
             await WriteAuditAsync(caller, outcome, started, argsText).ConfigureAwait(false);
             _logger.LogWarning(ex, "Tool {Tool} failed", _name);
             return $"Tool '{_name}' failed: {ex.Message}";
         }
 
+        RecordMetrics(outcome, stopwatch);
         await WriteAuditAsync(caller, outcome, started, argsText).ConfigureAwait(false);
         return Truncate(result, _governance.MaxResultChars);
+    }
+
+    private void RecordMetrics(string outcome, long from)
+    {
+        var tags = new TagList { { "tool", _name }, { "source", _source }, { "outcome", outcome } };
+        AgentTelemetry.Tools.Add(1, tags);
+        AgentTelemetry.ToolDuration.Record(Stopwatch.GetElapsedTime(from).TotalSeconds, tags);
     }
 
     private async ValueTask WriteAuditAsync(Authorization.CallerIdentity? caller, string outcome, DateTimeOffset started, string args)

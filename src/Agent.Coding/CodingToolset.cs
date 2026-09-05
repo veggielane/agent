@@ -1,7 +1,9 @@
 using System.ComponentModel;
+using System.Diagnostics;
 using System.Text;
 using System.Text.RegularExpressions;
 using Agent.Coding.Sandbox;
+using Agent.Core.Observability;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.FileSystemGlobbing;
 using Microsoft.Extensions.Logging;
@@ -413,6 +415,13 @@ public sealed class CodingToolset
         _state.CommandsRun.Add(parsed.ToString());
         _logger.LogInformation("Task #{Task} runs: {Command}", _workspace.TaskId, parsed);
 
+        using var activity = AgentTelemetry.Source.StartActivity("agent.sandbox.command", ActivityKind.Internal);
+        activity
+            .Tag("agent.task.id", _workspace.TaskId)
+            .Tag("agent.sandbox.mode", Sandbox.Mode)
+            .Tag("agent.command.executable", parsed.Executable);
+
+        var startedAt = Stopwatch.GetTimestamp();
         ProcessResult result;
         try
         {
@@ -423,12 +432,18 @@ public sealed class CodingToolset
         }
         catch (OperationCanceledException)
         {
+            RecordCommand("cancelled", startedAt, parsed);
             throw;
         }
         catch (Exception ex)
         {
+            activity.Failed(ex);
+            RecordCommand("error", startedAt, parsed);
             return (false, Error(ex));
         }
+
+        RecordCommand(result.TimedOut ? "timeout" : result.Success ? "ok" : "failed", startedAt, parsed);
+        activity.Tag("agent.command.exit_code", result.ExitCode);
 
         var sb = new StringBuilder();
         sb.Append("exit code: ").Append(result.ExitCode);
@@ -449,6 +464,18 @@ public sealed class CodingToolset
         }
 
         return (result.Success, Bound(sb.ToString()));
+    }
+
+    private void RecordCommand(string outcome, long from, ParsedCommand command)
+    {
+        var tags = new TagList
+        {
+            { "mode", Sandbox.Mode },
+            { "outcome", outcome },
+            { "executable", command.Executable },
+        };
+        AgentTelemetry.SandboxCommands.Add(1, tags);
+        AgentTelemetry.SandboxCommandDuration.Record(Stopwatch.GetElapsedTime(from).TotalSeconds, tags);
     }
 
     public async Task<string> GitDiffAsync(CancellationToken cancellationToken = default)

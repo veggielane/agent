@@ -26,6 +26,8 @@ public sealed class ProcessSandboxSession : ISandboxSession
 
     public string Description => "a host process in the repository directory (scrubbed environment, no container)";
 
+    public string Mode => "process";
+
     public Task<ProcessResult> ExecuteAsync(ParsedCommand command, TimeSpan timeout, CancellationToken cancellationToken)
         => _processes.RunAsync(command.Executable, command.Arguments, _workspace.RepoPath, null, timeout, cancellationToken);
 

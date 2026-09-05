@@ -1,6 +1,8 @@
+using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using Agent.Core.Conversations;
 using Agent.Core.Llm;
+using Agent.Core.Observability;
 using Agent.Core.Prompts;
 using Agent.Core.Tools;
 using Microsoft.Extensions.AI;
@@ -38,13 +40,37 @@ public sealed class AgentService : IAgent
     public async Task<AgentResponse> AnswerAsync(AgentRequest request, CancellationToken cancellationToken = default)
     {
         var (client, options, messages, model) = Prepare(request);
-        var response = await client.GetResponseAsync(messages, options, cancellationToken).ConfigureAwait(false);
+
+        using var activity = AgentTelemetry.Source.StartActivity("agent.answer", ActivityKind.Internal);
+        activity
+            .Tag("agent.channel", request.Channel.ToString())
+            .Tag("agent.conversation.id", request.ConversationId)
+            .Tag("gen_ai.request.model", model)
+            .Tag("agent.tools.offered", options.Tools?.Count ?? 0);
+
+        ChatResponse response;
+        try
+        {
+            response = await client.GetResponseAsync(messages, options, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            activity.Failed(ex);
+            throw;
+        }
+
+        AgentTelemetry.RecordTokens(response.Usage, nameof(ModelPurpose.Answer), request.Channel.ToString(), model);
 
         var toolsUsed = response.Messages
             .SelectMany(m => m.Contents.OfType<FunctionCallContent>())
             .Select(c => c.Name)
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
+
+        activity
+            .Tag("agent.tools.used", string.Join(",", toolsUsed))
+            .Tag("gen_ai.usage.input_tokens", response.Usage?.InputTokenCount)
+            .Tag("gen_ai.usage.output_tokens", response.Usage?.OutputTokenCount);
 
         var text = response.Text;
         if (string.IsNullOrWhiteSpace(text))

@@ -71,6 +71,12 @@ One core, thin adapters. Everything flows through `Agent.Core`:
   (`RepoConfigLoader` → `RepoProfile.Container`); `SandboxPolicy.Resolve` vets that request against the host
   options and throws `SandboxException` on any attempt to widen policy. Repo config is untrusted input:
   when adding a key there, decide explicitly whether it can only narrow.
+- **Telemetry** (`Observability/AgentTelemetry`): the single `ActivitySource` and `Meter`, plus every
+  instrument. Core depends only on the BCL diagnostics types, never the OpenTelemetry SDK; `Agent.Host`'s
+  `AddAgentObservability` decides what is exported. When adding instrumentation, put the instrument in
+  `AgentTelemetry` (names are a public contract that dashboards depend on) and keep message text, ticket
+  bodies, and file contents out of tags. Tests use `ActivityListener`/`MeterListener`; because both are
+  process-wide, `Agent.Core.Tests` runs with parallelization disabled via `xunit.runner.json`.
 - **Persistence** (`Agent.Persistence`): EF Core on SQL Server; only durable state (tasks, events, audit,
   cursors, processed events). Core registers in-memory stores with `TryAdd`; infrastructure replaces them.
 - **Host** (`Agent.Host`): Generic Host running listeners, pollers, and the worker. ASP.NET Core (Kestrel) is

@@ -1,5 +1,7 @@
 using Agent.Channels.GitLab;
 using Agent.Core;
+using Agent.Core.Authorization;
+using Agent.Core.Commands;
 using Agent.Core.Conversations;
 using Agent.Core.Events;
 using Agent.Core.Replies;
@@ -90,6 +92,22 @@ public sealed class ServiceCollectionExtensionsTests : IDisposable
         Assert.Single(provider.GetServices<IEventSource>().OfType<GitLabPoller>());
         Assert.Single(provider.GetServices<IReplySender>().OfType<GitLabReplySender>());
         Assert.Single(provider.GetServices<ITaskNotifier>().OfType<GitLabTaskNotifier>());
+    }
+
+    [Fact]
+    public void AddGitLabClient_RegistersTheFixCommand()
+    {
+        var configuration = Configuration();
+        var services = new ServiceCollection().AddAgentCore(configuration).AddGitLabClient(configuration);
+        using var provider = services.BuildServiceProvider();
+
+        var registry = provider.GetRequiredService<ICommandRegistry>();
+
+        Assert.True(registry.TryGet("fix", out var command));
+        Assert.True(registry.TryGet("implement", out var alias));
+        Assert.Same(command, alias);
+        Assert.Equal(Role.Team, command.Role);
+        Assert.Empty(registry.Problems);
     }
 
     [Fact]

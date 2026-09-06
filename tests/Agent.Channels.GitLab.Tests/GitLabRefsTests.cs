@@ -34,4 +34,57 @@ public sealed class GitLabRefsTests
         Assert.Equal("team/repo!7", GitLabRefs.MergeRequest("team/repo", 7));
         Assert.Equal("team/repo!7", GitLabRefs.Build(GitLabNoteableType.MergeRequest, "team/repo", 7));
     }
+
+    [Theory]
+    [InlineData("team/repo#12", "team/repo", 12L, GitLabNoteableType.Issue)]
+    [InlineData("team/sub/repo!45", "team/sub/repo", 45L, GitLabNoteableType.MergeRequest)]
+    [InlineData("https://gitlab.test/team/repo/-/issues/12", "team/repo", 12L, GitLabNoteableType.Issue)]
+    [InlineData("https://gitlab.test/team/sub/repo/-/merge_requests/45", "team/sub/repo", 45L, GitLabNoteableType.MergeRequest)]
+    [InlineData("https://gitlab.test/team/repo/-/merge_requests/45#note_9", "team/repo", 45L, GitLabNoteableType.MergeRequest)]
+    [InlineData("https://gitlab.test/team/repo/-/issues/12?sort=asc", "team/repo", 12L, GitLabNoteableType.Issue)]
+    [InlineData("https://gitlab.test/team/repo/issues/12", "team/repo", 12L, GitLabNoteableType.Issue)]
+    [InlineData("<https://gitlab.test/team/repo/-/issues/12>", "team/repo", 12L, GitLabNoteableType.Issue)]
+    public void TryParseTarget_TicketReference_ResolvesProjectAndIid(string text, string project, long iid, GitLabNoteableType type)
+    {
+        Assert.True(GitLabRefs.TryParseTarget(text, out var target));
+        Assert.Equal(project, target.Project);
+        Assert.Equal(iid, target.Iid);
+        Assert.Equal(type, target.Type);
+        Assert.False(target.IsRepository);
+        Assert.Equal(GitLabRefs.Build(type, project, iid), target.Reference);
+    }
+
+    [Theory]
+    [InlineData("team/repo")]
+    [InlineData("team/sub/repo")]
+    [InlineData("https://gitlab.test/team/repo")]
+    [InlineData("https://gitlab.test/team/repo.git")]
+    [InlineData("<https://gitlab.test/team/repo/>")]
+    public void TryParseTarget_Repository_HasNoTicket(string text)
+    {
+        Assert.True(GitLabRefs.TryParseTarget(text, out var target));
+        Assert.True(target.IsRepository);
+        Assert.Null(target.Type);
+        Assert.StartsWith("team/", target.Project, StringComparison.Ordinal);
+        Assert.Equal(target.Project, target.Reference);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("please")]
+    [InlineData("PROJ-123")]
+    [InlineData("ssh://git@gitlab.test/team/repo.git")]
+    public void TryParseTarget_NotAReference_ReturnsFalse(string? text)
+        => Assert.False(GitLabRefs.TryParseTarget(text, out _));
+
+    [Fact]
+    public void TryParseTarget_GitLabUnderASubPath_StripsTheConfiguredBaseUrl()
+    {
+        Assert.True(GitLabRefs.TryParseTarget("https://host.test/gitlab/team/repo/-/issues/3", "https://host.test/gitlab", out var target));
+
+        Assert.Equal("team/repo", target.Project);
+        Assert.Equal(3, target.Iid);
+        Assert.Equal(GitLabNoteableType.Issue, target.Type);
+    }
 }

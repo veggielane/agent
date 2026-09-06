@@ -49,6 +49,18 @@ public sealed class CodingOptions
     /// <summary>Git sub-commands allowed through <c>run</c>. Configuring the key replaces the defaults.</summary>
     public List<string> AllowedGitSubcommands { get; set; } = [.. DefaultAllowedGitSubcommands];
 
+    /// <summary>
+    /// Posts an understanding-and-plan note to the ticket or thread before any code is written, so a person
+    /// can cancel before a branch exists rather than review a surprise afterwards.
+    /// </summary>
+    public bool PostPlan { get; set; } = true;
+
+    /// <summary>Output cap for the plan. It is a paragraph and some bullets, not a design document.</summary>
+    public int PlanMaxTokens { get; set; } = 600;
+
+    /// <summary>Writes commit subjects as Conventional Commits (<c>fix:</c>, <c>feat:</c>, ...).</summary>
+    public bool ConventionalCommits { get; set; } = true;
+
     public string BranchPrefix { get; set; } = "agent/";
 
     public bool OpenAsDraft { get; set; }

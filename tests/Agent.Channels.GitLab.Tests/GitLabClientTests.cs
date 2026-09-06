@@ -400,4 +400,96 @@ public sealed class GitLabClientTests : IDisposable
         Assert.Equal(10, blob.Startline);
         Assert.Contains("Login()", blob.Data, StringComparison.Ordinal);
     }
+
+    [Fact]
+    public async Task GetMergeRequestAsync_ParsesHeadPipeline()
+    {
+        _gitlab.Get(
+            "/api/v4/projects/42/merge_requests/7",
+            Payloads.MergeRequest(7, 42, "team/repo", "Add feature", "opened", "agent/12-fix", "main", Payloads.UserRef(7, "agent-bot"), headPipeline: Payloads.Pipeline(900, "failed")));
+
+        var mr = await _gitlab.Client.GetMergeRequestAsync("42", 7, TestContext.Current.CancellationToken);
+
+        Assert.NotNull(mr!.HeadPipeline);
+        Assert.Equal(900, mr.HeadPipeline.Id);
+        Assert.Equal("failed", mr.HeadPipeline.Status);
+        Assert.True(mr.HeadPipeline.IsFailed);
+        Assert.Equal("https://gitlab.test/team/repo/-/pipelines/900", mr.HeadPipeline.WebUrl);
+        Assert.Equal("agent/12-fix", mr.HeadPipeline.Ref);
+    }
+
+    [Fact]
+    public async Task GetMergeRequestAsync_WithoutPipeline_LeavesHeadPipelineNull()
+    {
+        _gitlab.Get("/api/v4/projects/42/merge_requests/7", Payloads.MergeRequest(7, 42, "team/repo", "Add feature", "opened", "agent/12-fix", "main", Payloads.UserRef(7, "agent-bot")));
+
+        var mr = await _gitlab.Client.GetMergeRequestAsync("42", 7, TestContext.Current.CancellationToken);
+
+        Assert.Null(mr!.HeadPipeline);
+    }
+
+    [Fact]
+    public async Task GetPipelineJobsAsync_EncodesProjectPath_AndFollowsPaging()
+    {
+        _gitlab.Server.Given(Request.Create().WithPath("/api/v4/projects/team/repo/pipelines/900/jobs").WithParam("page", "1").UsingGet())
+            .RespondWith(Response.Create().WithStatusCode(200).WithHeader("Content-Type", "application/json").WithHeader("X-Next-Page", "2")
+                .WithBody(Json.Of(new[] { Payloads.Job(1, "build", "success", "build") })));
+        _gitlab.Server.Given(Request.Create().WithPath("/api/v4/projects/team/repo/pipelines/900/jobs").WithParam("page", "2").UsingGet())
+            .RespondWith(Response.Create().WithStatusCode(200).WithHeader("Content-Type", "application/json").WithHeader("X-Next-Page", "")
+                .WithBody(Json.Of(new[] { Payloads.Job(2, "test", "failed"), Payloads.Job(3, "lint", "failed", allowFailure: true) })));
+
+        var jobs = await _gitlab.Client.GetPipelineJobsAsync("team/repo", 900, TestContext.Current.CancellationToken);
+
+        Assert.Equal(["build", "test", "lint"], jobs.Select(j => j.Name));
+        Assert.False(jobs[0].IsFailed);
+        Assert.True(jobs[1].IsFailed);
+        Assert.False(jobs[1].AllowFailure);
+        Assert.True(jobs[2].AllowFailure);
+        Assert.Equal("script_failure", jobs[1].FailureReason);
+        var requests = _gitlab.Requests("GET", "/pipelines/900/jobs");
+        Assert.Equal(2, requests.Count);
+        Assert.Contains("team%2Frepo", requests[0].Url, StringComparison.Ordinal);
+        Assert.Equal("100", requests[0].Query!["per_page"].Single());
+    }
+
+    [Fact]
+    public async Task GetJobTraceTailAsync_ShortTrace_ReturnsItWhole()
+    {
+        _gitlab.GetText("/api/v4/projects/42/jobs/55/trace", "$ dotnet test\nFailed! 1 error\n");
+
+        var trace = await _gitlab.Client.GetJobTraceTailAsync("42", 55, 4000, TestContext.Current.CancellationToken);
+
+        Assert.Equal("$ dotnet test\nFailed! 1 error\n", trace);
+        Assert.Single(_gitlab.Requests("GET", "/jobs/55/trace"));
+    }
+
+    [Fact]
+    public async Task GetJobTraceTailAsync_LongTrace_KeepsOnlyTheTail()
+    {
+        _gitlab.GetText("/api/v4/projects/42/jobs/55/trace", new string('x', 50_000) + "ERROR: the build failed");
+
+        var trace = await _gitlab.Client.GetJobTraceTailAsync("42", 55, 100, TestContext.Current.CancellationToken);
+
+        Assert.Equal(101, trace.Length); // the ellipsis marks what was dropped
+        Assert.StartsWith("…", trace, StringComparison.Ordinal);
+        Assert.EndsWith("ERROR: the build failed", trace, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task GetJobTraceTailAsync_NoTrace_ReturnsEmpty()
+    {
+        _gitlab.GetStatus("/api/v4/projects/42/jobs/55/trace", 404);
+
+        Assert.Equal(string.Empty, await _gitlab.Client.GetJobTraceTailAsync("42", 55, 4000, TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task GetJobTraceTailAsync_ServerError_Throws()
+    {
+        _gitlab.GetStatus("/api/v4/projects/42/jobs/55/trace", 500, "{\"message\":\"boom\"}");
+
+        var ex = await Assert.ThrowsAsync<GitLabApiException>(() => _gitlab.Client.GetJobTraceTailAsync("42", 55, 4000, TestContext.Current.CancellationToken));
+
+        Assert.Contains("boom", ex.Message, StringComparison.Ordinal);
+    }
 }

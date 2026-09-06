@@ -49,6 +49,16 @@ public interface IGitLabClient
 
     Task<GitLabMergeRequest> UpdateMergeRequestAsync(string projectId, long iid, UpdateMergeRequestRequest request, CancellationToken cancellationToken = default);
 
+    /// <summary>Jobs of a pipeline, oldest stage first as GitLab returns them.</summary>
+    Task<IReadOnlyList<GitLabJob>> GetPipelineJobsAsync(string projectId, long pipelineId, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// The last <paramref name="maxChars"/> characters of a job's log. Traces run to megabytes and the failure is at
+    /// the end, so only the tail is kept; it is prefixed with an ellipsis when anything was dropped. Empty when the
+    /// job has no trace (404).
+    /// </summary>
+    Task<string> GetJobTraceTailAsync(string projectId, long jobId, int maxChars, CancellationToken cancellationToken = default);
+
     /// <summary>Raw file content at <paramref name="reference"/> (branch, tag or SHA; project default when null). Null when missing.</summary>
     Task<string?> GetFileAsync(string projectId, string path, string? reference, CancellationToken cancellationToken = default);
 

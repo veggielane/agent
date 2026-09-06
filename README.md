@@ -117,6 +117,20 @@ only from there. `.engex.yml` holds structured settings: build and test commands
 `AGENTS.md` holds standing repository conventions, the things that would otherwise be rediscovered on every
 task. Neither repository file can tell the agent what work to do.
 
+**Maximum hardening.** Capabilities are dropped and no-new-privileges is set by default. Three further
+controls are opt-in because each one breaks common toolchains unless you provide for it:
+
+```jsonc
+"Sandbox": {
+  "User": "1000:1000",              // non-root; some images need root to install packages
+  "ReadOnlyRootFilesystem": true,   // needs package caches mounted, since they live outside /work
+  "Network": "none"                 // needs a pre-populated cache volume, or restores fail
+}
+```
+
+Turn them on together with a profile that mounts the caches your builds need, and test one repository
+before making it the default.
+
 Prerequisites on the worker: Linux containers, and **`Coding:WorkspaceRoot` must be a directory the Docker
 daemon is allowed to bind-mount**. On Docker Desktop that means adding it under Settings → Resources → File
 sharing (or using the WSL2 backend with a path inside WSL); an unshared path makes `docker run` hang rather
@@ -186,7 +200,19 @@ The CLI reads `appsettings.json` next to the binary, then `%APPDATA%/agent/appse
 | Mattermost | DM the bot, or `@agent` in a channel (replies go in a thread; the bot follows that thread afterwards) |
 | Jira | `[~agent-bot]` in a comment to ask; add the `agent` label to hand the issue over as a coding task |
 | GitLab | `@agent-bot` in an issue or MR note; assign an issue to the bot or label it `agent` to start a task; mention it on the agent's MR for follow-ups |
-| Anywhere | `!help`, `!status`, `!tasks`, `!task 12`, `!cancel 12`, `!model`, `!whoami`, plus YAML commands like `!summarize` and `!fix` |
+| Anywhere | `!fix <issue-or-repo> <what to do>` starts a coding task from any channel, so work can be asked for in a Mattermost thread as well as from a ticket |
+| Anywhere | `!help`, `!status`, `!tasks`, `!task 12`, `!cancel 12`, `!model`, `!whoami`, plus YAML commands like `!summarize` |
+
+### How a coding task runs
+
+1. It posts what it understood and how it plans to proceed, before writing anything. Cancel with
+   `!cancel <id>` while the branch is still empty.
+2. It works on a branch, runs your build and tests, and fixes what it broke.
+3. It pushes and opens a merge request with the requester as reviewer, draft if verification failed.
+   **The merge request is the approval gate.** The agent never merges and never pushes to a protected branch.
+4. If the merge request's pipeline fails, it reads the failing jobs, tries to fix them on the same branch,
+   and after a bounded number of attempts says so on the merge request and leaves it to a human.
+5. Mentioning the agent on its own merge request queues a follow-up on that branch.
 
 ## Layout
 

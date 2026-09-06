@@ -214,6 +214,53 @@ public sealed record GitLabDiscussion
     public IReadOnlyList<GitLabNote> Notes { get; init; } = [];
 }
 
+/// <summary>
+/// A CI pipeline, as embedded in <see cref="GitLabMergeRequest.HeadPipeline"/>. <see cref="Status"/> is one of
+/// created, waiting_for_resource, preparing, pending, running, success, failed, canceled, skipped, manual, scheduled.
+/// </summary>
+public sealed record GitLabPipeline
+{
+    public long Id { get; init; }
+
+    public long? ProjectId { get; init; }
+
+    public string Status { get; init; } = string.Empty;
+
+    public string? Ref { get; init; }
+
+    public string? Sha { get; init; }
+
+    public string? WebUrl { get; init; }
+
+    public DateTimeOffset? CreatedAt { get; init; }
+
+    public DateTimeOffset? UpdatedAt { get; init; }
+
+    public bool IsFailed => string.Equals(Status, "failed", StringComparison.OrdinalIgnoreCase);
+}
+
+/// <summary>One job of GET /projects/:id/pipelines/:pipeline_id/jobs.</summary>
+public sealed record GitLabJob
+{
+    public long Id { get; init; }
+
+    public string Name { get; init; } = string.Empty;
+
+    public string? Stage { get; init; }
+
+    /// <summary>created, pending, running, failed, success, canceled, skipped, manual.</summary>
+    public string Status { get; init; } = string.Empty;
+
+    /// <summary>True when the job is allowed to fail without failing the pipeline, so its failure is not the agent's problem.</summary>
+    public bool AllowFailure { get; init; }
+
+    public string? FailureReason { get; init; }
+
+    public string? WebUrl { get; init; }
+
+    public bool IsFailed => string.Equals(Status, "failed", StringComparison.OrdinalIgnoreCase);
+}
+
 public sealed record GitLabMergeRequest
 {
     public long Id { get; init; }
@@ -240,6 +287,9 @@ public sealed record GitLabMergeRequest
     public IReadOnlyList<string>? Labels { get; init; }
 
     public DateTimeOffset? MergedAt { get; init; }
+
+    /// <summary>The pipeline of the latest commit on the source branch. Null when the project has no CI or nothing ran yet.</summary>
+    public GitLabPipeline? HeadPipeline { get; init; }
 
     public bool Draft { get; init; }
 

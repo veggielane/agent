@@ -42,6 +42,7 @@ public static class ServiceCollectionExtensions
         services.TryAddSingleton<ISandbox, SandboxSelector>();
         services.AddSingleton<IStatusContributor>(sp => sp.GetRequiredService<DockerSandbox>());
 
+        services.TryAddSingleton<ITaskPlanner, TaskPlanner>();
         services.TryAddSingleton<CodingEngine>();
         services.TryAddSingleton<OpenCode.OpenCodeCodingEngine>();
         services.TryAddSingleton<ICodingEngine, CodingEngineSelector>();

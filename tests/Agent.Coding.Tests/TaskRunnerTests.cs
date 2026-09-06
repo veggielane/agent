@@ -26,15 +26,27 @@ public sealed class TaskRunnerTests : IDisposable
 
     private string WorkspaceRoot => _dir.Combine("work");
 
-    private (TaskRunner Runner, GitRunner Git) Create(ICodingEngine engine, bool withMergeRequests = true)
+    private (TaskRunner Runner, GitRunner Git) Create(ICodingEngine engine, bool withMergeRequests = true, ITaskPlanner? planner = null, Action<CodingOptions>? configure = null)
     {
-        var options = TestOptions.Coding(WorkspaceRoot);
+        var options = TestOptions.Coding(WorkspaceRoot, configure);
         var monitor = TestOptions.Monitor(options);
         var processes = new CliWrapProcessRunner(monitor, NullLogger<CliWrapProcessRunner>.Instance);
         var git = new GitRunner(processes, NullLogger<GitRunner>.Instance);
         var workspaces = new WorkspaceManager(git, monitor, NullLogger<WorkspaceManager>.Instance);
-        var runner = new TaskRunner(_store, _cancellations, workspaces, engine, git, _notifier, monitor, NullLogger<TaskRunner>.Instance, null, withMergeRequests ? _mergeRequests : null);
+        var runner = new TaskRunner(_store, _cancellations, workspaces, engine, git, _notifier, monitor, NullLogger<TaskRunner>.Instance, null, withMergeRequests ? _mergeRequests : null, planner);
         return (runner, git);
+    }
+
+    /// <summary>A planner that records what it was asked and returns a canned plan.</summary>
+    private sealed class FakePlanner(string? plan) : ITaskPlanner
+    {
+        public List<string> Instructions { get; } = [];
+
+        public Task<string?> PlanAsync(Workspace workspace, string instruction, Core.Authorization.CallerIdentity requester, CancellationToken cancellationToken)
+        {
+            Instructions.Add(instruction);
+            return Task.FromResult(plan);
+        }
     }
 
     private async Task<AgentTask> QueueTaskAsync(string? repoUrl, string? projectId = "group/repo")
@@ -66,6 +78,92 @@ public sealed class TaskRunnerTests : IDisposable
         });
 
     [Fact]
+    public async Task RunAsync_PostsThePlanBeforeAnyCodeIsWritten()
+    {
+        GitTestHelper.SkipIfMissing();
+        var remote = GitTestHelper.CreateBareRepoWithCommit(_dir.Combine("remote-plan"));
+        var planner = new FakePlanner("**Understanding**\nAdd a greeting.\n\n**Plan**\n- write the file");
+        var (runner, _) = Create(EngineWriting("hello.txt", "hi"), planner: planner);
+        var task = await QueueTaskAsync(remote);
+
+        await runner.RunAsync(task, TestContext.Current.CancellationToken);
+
+        Assert.Equal(["Add a greeting file."], planner.Instructions);
+        Assert.Contains(_notifications, n => n.Contains("**Understanding**", StringComparison.Ordinal));
+
+        // It must arrive before the merge request, so a person can cancel while the branch is still empty.
+        var planIndex = _notifications.FindIndex(n => n.Contains("**Understanding**", StringComparison.Ordinal));
+        var mrIndex = _notifications.FindIndex(n => n.Contains("merge_requests/7", StringComparison.Ordinal));
+        Assert.True(planIndex >= 0 && mrIndex > planIndex, "the plan must be posted before the merge request");
+        Assert.Contains("!cancel", _notifications[planIndex], StringComparison.Ordinal);
+
+        var events = await _store.GetEventsAsync(task.Id, cancellationToken: TestContext.Current.CancellationToken);
+        Assert.Contains(events, e => e.Type == "plan");
+    }
+
+    [Fact]
+    public async Task RunAsync_PlanDisabledOrUnavailable_RunsAnyway()
+    {
+        GitTestHelper.SkipIfMissing();
+        var remote = GitTestHelper.CreateBareRepoWithCommit(_dir.Combine("remote-noplan"));
+        var planner = new FakePlanner(null);
+        var (runner, _) = Create(EngineWriting("hello.txt", "hi"), planner: planner, configure: o => o.PostPlan = false);
+        var task = await QueueTaskAsync(remote);
+
+        await runner.RunAsync(task, TestContext.Current.CancellationToken);
+
+        Assert.Empty(planner.Instructions);
+        Assert.Equal(AgentTaskStatus.AwaitingReview, (await _store.GetAsync(task.Id, TestContext.Current.CancellationToken))!.Status);
+    }
+
+    [Theory]
+    [InlineData("Fix the crash on login", "fix")]
+    [InlineData("Add a caching layer", "feat")]
+    [InlineData("Refactor the parser", "refactor")]
+    [InlineData("Update the readme", "docs")]
+    public void CommitMessage_UsesConventionalCommits(string instruction, string expectedType)
+    {
+        // The summary says "Added ..." for every kind of change, so the type must come from the request.
+        var task = new AgentTask { Id = 12, SourceRef = "group/repo#12", Title = instruction, Instruction = instruction, RequesterName = "Alice" };
+        var result = new CodingResult("Added a cache to the login path.", [], [], true, null, 1, 10, CodingStopReason.Done, null);
+
+        var message = TaskRunner.CommitMessage(task, result, conventional: true);
+        var subject = message.Split('\n')[0];
+
+        Assert.StartsWith(expectedType + ": ", subject, StringComparison.Ordinal);
+        Assert.True(subject.Length <= 72, $"subject was {subject.Length} characters: {subject}");
+        Assert.DoesNotContain(".", subject[^1..], StringComparison.Ordinal);
+        Assert.Contains("Requested-by: Alice", message, StringComparison.Ordinal);
+        Assert.Contains("Refs: group/repo#12", message, StringComparison.Ordinal);
+        Assert.Contains("Task: #12", message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void CommitMessage_RequestWithoutAnIntentWord_FallsBackToTheSummaryThenChore()
+    {
+        var task = new AgentTask { Id = 1, SourceRef = "r#1", Title = "Rotate the deployment keys", Instruction = "Rotate the deployment keys", RequesterName = "A" };
+
+        // Neither the request nor the summary names a kind of change.
+        var neutral = new CodingResult("Rotated the keys.", [], [], null, null, 1, 1, CodingStopReason.Done, null);
+        Assert.StartsWith("chore: ", TaskRunner.CommitMessage(task, neutral, conventional: true), StringComparison.Ordinal);
+
+        // The summary is the fallback when the request itself gives nothing away.
+        var telling = new CodingResult("Fixed the expiry check.", [], [], null, null, 1, 1, CodingStopReason.Done, null);
+        Assert.StartsWith("fix: ", TaskRunner.CommitMessage(task, telling, conventional: true), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void CommitMessage_ConventionalOff_KeepsTheSourceRefSubject()
+    {
+        var task = new AgentTask { Id = 3, SourceRef = "PROJ-9", Title = "t", Instruction = "fix it", RequesterName = "Bob" };
+        var result = new CodingResult("Fixed the thing.", [], [], null, null, 1, 1, CodingStopReason.Done, null);
+
+        var message = TaskRunner.CommitMessage(task, result, conventional: false);
+
+        Assert.StartsWith("PROJ-9: Fixed the thing.", message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task RunAsync_HappyPath_PushesBranchOpensMrAndNotifies()
     {
         GitTestHelper.SkipIfMissing();
@@ -89,7 +187,8 @@ public sealed class TaskRunnerTests : IDisposable
         var (_, branches) = GitTestHelper.Run(_dir.Path, $"--git-dir={bare}", "branch", "--list", "agent/*");
         Assert.Contains("agent/group-repo-12-add-greeting", branches, StringComparison.Ordinal);
         var (_, log) = GitTestHelper.Run(_dir.Path, $"--git-dir={bare}", "log", "-1", "--format=%B", "agent/group-repo-12-add-greeting");
-        Assert.StartsWith("group/repo#12: Added GREETING.md", log, StringComparison.Ordinal);
+        Assert.StartsWith("feat: added GREETING.md", log, StringComparison.Ordinal);
+        Assert.Contains("Refs: group/repo#12", log, StringComparison.Ordinal);
         Assert.Contains("Requested-by: Alice", log, StringComparison.Ordinal);
         Assert.Contains($"Task: #{task.Id}", log, StringComparison.Ordinal);
 
@@ -250,8 +349,8 @@ public sealed class TaskRunnerTests : IDisposable
 
         var bare = GitTestHelper.BarePath(_dir.Path);
         var (_, log) = GitTestHelper.Run(_dir.Path, $"--git-dir={bare}", "log", "--format=%s", final.WorkBranch!);
-        Assert.Contains("Added second.txt", log, StringComparison.Ordinal);
-        Assert.Contains("Added first.txt", log, StringComparison.Ordinal);
+        Assert.Contains("added second.txt", log, StringComparison.Ordinal);
+        Assert.Contains("added first.txt", log, StringComparison.Ordinal);
     }
 
     [Fact]

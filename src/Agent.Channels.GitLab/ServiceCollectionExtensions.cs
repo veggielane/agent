@@ -1,3 +1,4 @@
+using Agent.Core;
 using Agent.Core.Conversations;
 using Agent.Core.Events;
 using Agent.Core.Replies;
@@ -37,6 +38,9 @@ public static class ServiceCollectionExtensions
         services.TryAddEnumerable(ServiceDescriptor.Singleton<IToolSource, GitLabTools>());
         services.TryAddSingleton<IMergeRequestPublisher, GitLabMergeRequestPublisher>();
         services.TryAddSingleton<IRepositoryCredentialProvider, GitLabCredentialProvider>();
+
+        // !fix lives with the client, not the poller: the CLI and every other channel start tasks with it too.
+        services.AddCommandHandlers<GitLabFixCommand>();
         return services;
     }
 

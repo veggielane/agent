@@ -143,7 +143,7 @@ internal static class Payloads
         References = new { Short = $"#{iid}", Relative = $"#{iid}", Full = $"{path}#{iid}" },
     };
 
-    public static object MergeRequest(long iid, long projectId, string path, string title, string state, string sourceBranch, string targetBranch, object author, string? description = null, bool draft = false, string[]? labels = null) => new
+    public static object MergeRequest(long iid, long projectId, string path, string title, string state, string sourceBranch, string targetBranch, object author, string? description = null, bool draft = false, string[]? labels = null, object? headPipeline = null) => new
     {
         Id = projectId * 1000 + iid,
         Iid = iid,
@@ -157,9 +157,33 @@ internal static class Payloads
         Author = author,
         Labels = labels ?? ["agent"],
         Draft = draft,
+        HeadPipeline = headPipeline,
         MergedAt = state == "merged" ? "2026-09-04T09:00:00.000Z" : null,
         CreatedAt = "2026-09-01T08:00:00.000Z",
         UpdatedAt = "2026-09-04T08:00:00.000Z",
+    };
+
+    public static object Pipeline(long id, string status, long projectId = 42, string path = "team/repo", string reference = "agent/12-fix") => new
+    {
+        Id = id,
+        ProjectId = projectId,
+        Status = status,
+        Ref = reference,
+        Sha = "0f1e2d3c",
+        WebUrl = $"https://gitlab.test/{path}/-/pipelines/{id}",
+        CreatedAt = "2026-09-04T08:00:00.000Z",
+        UpdatedAt = "2026-09-04T08:10:00.000Z",
+    };
+
+    public static object Job(long id, string name, string status, string stage = "test", bool allowFailure = false, string path = "team/repo") => new
+    {
+        Id = id,
+        Name = name,
+        Stage = stage,
+        Status = status,
+        AllowFailure = allowFailure,
+        FailureReason = status == "failed" ? "script_failure" : null,
+        WebUrl = $"https://gitlab.test/{path}/-/jobs/{id}",
     };
 
     public static object Note(long id, string body, object author, string createdAt, bool system = false, object? position = null, string? type = null) => new
@@ -227,6 +251,11 @@ internal sealed class GitLabTestServer : IDisposable
 
         Server.Given(request).RespondWith(Response.Create().WithStatusCode(200).WithHeader("Content-Type", "application/json").WithBody(json));
     }
+
+    /// <summary>A plain-text endpoint, such as a job trace.</summary>
+    public void GetText(string path, string body)
+        => Server.Given(Request.Create().WithPath(path).UsingGet())
+            .RespondWith(Response.Create().WithStatusCode(200).WithHeader("Content-Type", "text/plain").WithBody(body));
 
     public void GetStatus(string path, int status, string body = "{\"message\":\"404 Not Found\"}")
         => Server.Given(Request.Create().WithPath(path).UsingGet())

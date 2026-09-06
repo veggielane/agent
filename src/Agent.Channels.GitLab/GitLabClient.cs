@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Net;
 using System.Net.Http.Json;
+using System.Text;
 
 namespace Agent.Channels.GitLab;
 
@@ -110,6 +111,45 @@ public sealed class GitLabClient : IGitLabClient
         using var response = await _http.PutAsJsonAsync($"api/v4/projects/{Encode(projectId)}/merge_requests/{iid}", payload, GitLabJson.Options, cancellationToken).ConfigureAwait(false);
         await EnsureSuccessAsync(response, cancellationToken).ConfigureAwait(false);
         return await ReadAsync<GitLabMergeRequest>(response, cancellationToken).ConfigureAwait(false);
+    }
+
+    public Task<IReadOnlyList<GitLabJob>> GetPipelineJobsAsync(string projectId, long pipelineId, CancellationToken cancellationToken = default)
+        => GetAllPagesAsync<GitLabJob>($"api/v4/projects/{Encode(projectId)}/pipelines/{pipelineId}/jobs?per_page=100", cancellationToken);
+
+    public async Task<string> GetJobTraceTailAsync(string projectId, long jobId, int maxChars, CancellationToken cancellationToken = default)
+    {
+        var limit = Math.Max(1, maxChars);
+        using var response = await _http
+            .GetAsync($"api/v4/projects/{Encode(projectId)}/jobs/{jobId}/trace", HttpCompletionOption.ResponseHeadersRead, cancellationToken)
+            .ConfigureAwait(false);
+        if (response.StatusCode == HttpStatusCode.NotFound)
+        {
+            return string.Empty;
+        }
+
+        await EnsureSuccessAsync(response, cancellationToken).ConfigureAwait(false);
+
+        // Streamed and trimmed as it arrives: a trace can be hundreds of megabytes, and only the tail is wanted.
+        var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+        await using (stream.ConfigureAwait(false))
+        {
+            using var reader = new StreamReader(stream);
+            var buffer = new char[4096];
+            var tail = new StringBuilder(Math.Min(limit, 8192));
+            var dropped = false;
+            int read;
+            while ((read = await reader.ReadAsync(buffer.AsMemory(), cancellationToken).ConfigureAwait(false)) > 0)
+            {
+                tail.Append(buffer, 0, read);
+                if (tail.Length > limit)
+                {
+                    tail.Remove(0, tail.Length - limit);
+                    dropped = true;
+                }
+            }
+
+            return dropped ? "…" + tail.ToString() : tail.ToString();
+        }
     }
 
     public async Task<string?> GetFileAsync(string projectId, string path, string? reference, CancellationToken cancellationToken = default)

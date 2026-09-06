@@ -321,7 +321,12 @@ tests/
      no existing task becomes a task. Per-group watermark in `ChannelCursors`, with overlap and dedupe
      on issue id exactly as for Jira.
   3. **Task MR state**: for each task in `AwaitingReview`, `GET /projects/:id/merge_requests/:iid` to
-     detect merged / closed and finish the task. Only active tasks, so this stays cheap.
+     detect merged / closed and finish the task. Only active tasks, so this stays cheap. The same step
+     reads the MR's `head_pipeline` (`WatchPipelines`): a **failed** pipeline becomes a follow-up
+     instruction naming the failing jobs and quoting the tail of their logs, so the agent fixes its own
+     red build on the same branch. Bounded by `MaxPipelineFixAttempts` (2), with the pipeline id recorded
+     so one failure is never handled twice; when the attempts run out it says so on the MR and stops.
+     `allow_failure` jobs are ignored; running and successful pipelines are left alone.
 - Triggers:
   - Issue **assigned to the bot** (to-do `assigned`) or **labelled `agent`** → **task** in that
     project. Both are supported; which the team uses is convention **[decide]**.
@@ -390,14 +395,20 @@ Flow for a new task:
 2. Worker takes the task (max `Coding.MaxConcurrentTasks`; one active task per repo+branch).
 3. Clone (partial clone, `--filter=blob:none`), create `agent/<key>-<slug>` from the default branch
    (or check out the MR source branch for follow-ups).
-4. Coding loop (6.8) with the ticket text as the instruction and repo guidance from `AGENTS.md`.
-5. Verify: run the repo's configured build/test commands; feed failures back to the loop (bounded
+4. **Announce the plan** (`Coding.PostPlan`, first run only): a short understanding-and-plan note posted
+   to the ticket or thread before anything is written, so a person can `!cancel` while the branch is
+   still empty. It is not an approval gate — the merge request is — so the task proceeds immediately.
+5. Coding loop (6.8) with the ticket text as the instruction and repo guidance from `AGENTS.md`.
+6. Verify: run the repo's configured build/test commands; feed failures back to the loop (bounded
    retries).
-6. Commit (author = bot; trailers `Requested-by: <AD account>`, `Task: #42`), push, open MR (draft if
-   verification failed or budget exhausted), set the requester as reviewer, link the issue
-   (`Closes #n` / Jira key in title).
-7. Final comment on the ticket and in the MR description: what changed, what was run, what was not
+7. Commit (author = bot; Conventional Commits subject inferred from what was asked, `Coding.ConventionalCommits`;
+   trailers `Requested-by`, `Refs: <source ref>`, `Task: #42`), push, open MR (draft if verification
+   failed or budget exhausted), set the requester as reviewer, link the issue.
+8. Final comment on the ticket and in the MR description: what changed, what was run, what was not
    verified, budget used.
+9. **Watch the merge request's pipeline** (6.5). A failed pipeline becomes a follow-up instruction
+   carrying the failing jobs and their log tails, bounded by `GitLab.MaxPipelineFixAttempts`; when the
+   attempts run out the agent says so on the MR and leaves it for a human.
 
 Follow-ups: an authorized mention on the MR appends the comment (and, for diff discussions, the
 referenced file/lines) as the next instruction; the loop runs on the existing branch and pushes.
@@ -970,12 +981,12 @@ Mattermost, in-process MCP servers over pipes, local bare git repositories for t
 | Core: pipeline, roles, commands, tools, tasks, LLM factory, telemetry | `Agent.Core` | 129 |
 | Mattermost (WebSocket, threads, DMs, reactions, splitting) | `Agent.Channels.Mattermost` | 116 |
 | Jira DC (polling, wiki formatter, tools, repo resolver) | `Agent.Channels.Jira` | 164 |
-| GitLab (to-do polling, labelled issues, MR publisher, tools) | `Agent.Channels.GitLab` | 149 |
-| Coding engine + worker (native and opencode engines, workspace, git, budgets, MR flow, container sandbox, `.engex.yml` policy) | `Agent.Coding`, `Agent.Worker` | 241 |
+| GitLab (to-do polling, labelled issues, MR publisher, pipeline watch, `!fix`, tools) | `Agent.Channels.GitLab` | 211 |
+| Coding engine + worker (native and opencode engines, plan step, workspace, git, budgets, MR flow, container sandbox, `.engex.yml` policy) | `Agent.Coding`, `Agent.Worker` | 254 |
 | Persistence (EF Core, SQL Server migration), Keycloak, LDAP | `Agent.Persistence`, `Agent.Infrastructure.*` | 60 |
 | MCP client, governance, `!mcp` | `Agent.Mcp` | 124 |
 | Host API (JWT bearer, chat/SSE, tasks) and CLI remote backend | `Agent.Host`, `Agent.Cli` | 18 |
-| **Total** | | **1001, all passing** |
+| **Total** | | **1076, all passing** |
 
 Milestone mapping: M0–M8 are implemented, plus the M9 per-task **container sandbox** (6.9;
 `Coding:Sandbox:Mode = Docker`, default stays `Process`) and per-repository containers through `.engex.yml`

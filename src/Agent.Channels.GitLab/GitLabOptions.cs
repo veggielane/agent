@@ -54,5 +54,22 @@ public sealed class GitLabOptions
     [Range(1, 500)]
     public int HistoryNotes { get; set; } = 40;
 
+    /// <summary>
+    /// Whether the poller watches the head pipeline of merge requests it opened and re-runs the coding loop when it
+    /// fails. Turn off where CI is flaky or expensive enough that a human should always look first.
+    /// </summary>
+    public bool WatchPipelines { get; set; } = true;
+
+    /// <summary>
+    /// How many failed pipelines the agent tries to fix for one merge request before leaving it to a human. Zero
+    /// reports the failure and never re-queues.
+    /// </summary>
+    [Range(0, 10)]
+    public int MaxPipelineFixAttempts { get; set; } = 2;
+
+    /// <summary>Characters of each failed job's log tail quoted into the follow-up instruction.</summary>
+    [Range(200, 100_000)]
+    public int PipelineTraceChars { get; set; } = 4000;
+
     public IReadOnlyList<string> EffectiveMrLabels => MrLabels is { Length: > 0 } ? MrLabels : DefaultMrLabels;
 }

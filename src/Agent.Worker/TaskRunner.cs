@@ -28,6 +28,7 @@ public sealed class TaskRunner : ITaskRunner
     private readonly ILogger<TaskRunner> _logger;
     private readonly IRepositoryCredentialProvider? _credentials;
     private readonly IMergeRequestPublisher? _mergeRequests;
+    private readonly ITaskPlanner? _planner;
 
     public TaskRunner(
         ITaskStore store,
@@ -39,7 +40,8 @@ public sealed class TaskRunner : ITaskRunner
         IOptionsMonitor<CodingOptions> options,
         ILogger<TaskRunner> logger,
         IRepositoryCredentialProvider? credentials = null,
-        IMergeRequestPublisher? mergeRequests = null)
+        IMergeRequestPublisher? mergeRequests = null,
+        ITaskPlanner? planner = null)
     {
         _store = store;
         _cancellations = cancellations;
@@ -51,6 +53,7 @@ public sealed class TaskRunner : ITaskRunner
         _logger = logger;
         _credentials = credentials;
         _mergeRequests = mergeRequests;
+        _planner = planner;
     }
 
     public async Task RunAsync(AgentTask task, CancellationToken cancellationToken)
@@ -66,6 +69,8 @@ public sealed class TaskRunner : ITaskRunner
             {
                 return;
             }
+
+            await AnnouncePlanAsync(task, workspace, token).ConfigureAwait(false);
 
             var result = await WorkAsync(task, workspace, token).ConfigureAwait(false);
             if (result.StopReason == CodingStopReason.Cancelled)
@@ -142,6 +147,29 @@ public sealed class TaskRunner : ITaskRunner
         return workspace;
     }
 
+    /// <summary>
+    /// Says what it understood and how it intends to proceed, before writing anything. The task keeps
+    /// running: this is a chance to cancel with the branch still empty, not an approval gate. The merge
+    /// request is the approval gate.
+    /// </summary>
+    private async Task AnnouncePlanAsync(AgentTask task, Workspace workspace, CancellationToken token)
+    {
+        if (_planner is null || !_options.CurrentValue.PostPlan || !string.IsNullOrWhiteSpace(task.Summary))
+        {
+            // Follow-up runs already have context in the thread; only the first run announces a plan.
+            return;
+        }
+
+        var plan = await _planner.PlanAsync(workspace, task.Instruction, Requester(task), token).ConfigureAwait(false);
+        if (string.IsNullOrWhiteSpace(plan))
+        {
+            return;
+        }
+
+        await EventAsync(task, "plan", TextUtil.TruncateEnd(TextUtil.FirstLine(plan), 200)).ConfigureAwait(false);
+        await NotifyAsync(task, $"{plan}\n\n_Working on `{workspace.Branch}`. Cancel with `!cancel {task.Id}` if this is not what you meant._").ConfigureAwait(false);
+    }
+
     private async Task<CodingResult> WorkAsync(AgentTask task, Workspace workspace, CancellationToken token)
     {
         var pending = string.IsNullOrWhiteSpace(task.PendingInstruction) ? null : task.PendingInstruction.Trim();
@@ -202,7 +230,7 @@ public sealed class TaskRunner : ITaskRunner
         var branch = task.WorkBranch ?? workspace.Branch;
         var credentials = _credentials?.GetCredentials(task.RepoUrl!);
         await _git.AddAllAsync(workspace.RepoPath, token).ConfigureAwait(false);
-        await _git.CommitAsync(workspace.RepoPath, CommitMessage(task, result), options.CommitAuthorName, options.CommitAuthorEmail, token).ConfigureAwait(false);
+        await _git.CommitAsync(workspace.RepoPath, CommitMessage(task, result, options.ConventionalCommits), options.CommitAuthorName, options.CommitAuthorEmail, token).ConfigureAwait(false);
         await _git.PushAsync(workspace.RepoPath, branch, credentials, setUpstream: true, token).ConfigureAwait(false);
         await EventAsync(task, "pushed", $"Pushed {branch} ({result.ChangedFiles.Count} changed files)").ConfigureAwait(false);
 
@@ -373,21 +401,98 @@ public sealed class TaskRunner : ITaskRunner
         };
     }
 
-    private static string CommitMessage(AgentTask task, CodingResult result)
+    internal static string CommitMessage(AgentTask task, CodingResult result, bool conventional)
     {
-        var title = TextUtil.TruncateEnd(TextUtil.FirstLine(result.Summary), 72);
-        if (string.IsNullOrEmpty(title))
+        var subject = TextUtil.FirstLine(result.Summary).Trim();
+        if (string.IsNullOrEmpty(subject))
         {
-            title = task.Title ?? "agent changes";
+            subject = task.Title ?? "agent changes";
         }
 
         var sb = new StringBuilder();
-        sb.Append(task.SourceRef).Append(": ").Append(title).Append("\n\n");
+        if (conventional)
+        {
+            var type = ConventionalType(task, result);
+
+            // Conventional Commits: lowercase imperative subject, no trailing period, subject line <= 72.
+            subject = subject.TrimEnd('.');
+            if (subject.Length > 0)
+            {
+                subject = char.ToLowerInvariant(subject[0]) + subject[1..];
+            }
+
+            subject = TextUtil.TruncateEnd(subject, Math.Max(10, 72 - type.Length - 2));
+            sb.Append(type).Append(": ").Append(subject).Append("\n\n");
+        }
+        else
+        {
+            sb.Append(task.SourceRef).Append(": ").Append(TextUtil.TruncateEnd(subject, 72)).Append("\n\n");
+        }
+
         sb.Append(result.Summary.Trim()).Append("\n\n");
         sb.Append("Requested-by: ").Append(task.RequesterName).Append('\n');
+        sb.Append("Refs: ").Append(task.SourceRef).Append('\n');
         sb.Append("Task: #").Append(task.Id).Append('\n');
         return sb.ToString();
     }
+
+    /// <summary>
+    /// Guesses the Conventional Commits type from what was asked and what came back. It is a label on a
+    /// commit a human is about to review, so a wrong guess is cosmetic; defaulting to <c>chore</c> is safe.
+    /// </summary>
+    internal static string ConventionalType(AgentTask task, CodingResult result)
+    {
+        // What was asked decides the type. The summary is only a fallback, because it describes what was
+        // done and almost always says "added", which would make everything a feature.
+        return Classify($"{task.Title} {task.Instruction}")
+            ?? Classify(TextUtil.FirstLine(result.Summary))
+            ?? "chore";
+    }
+
+    private static string? Classify(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return null;
+        }
+
+        var lower = text.ToLowerInvariant();
+
+        if (Mentions(lower, "fix", "bug", "broken", "regression", "crash", "error", "fails", "failing", "defect"))
+        {
+            return "fix";
+        }
+
+        if (Mentions(lower, "refactor", "rename", "restructure", "tidy", "clean up", "simplify"))
+        {
+            return "refactor";
+        }
+
+        if (Mentions(lower, "document", "documentation", "docs", "readme"))
+        {
+            return "docs";
+        }
+
+        if (Mentions(lower, "performance", "perf", "faster", "optimise", "optimize"))
+        {
+            return "perf";
+        }
+
+        if (Mentions(lower, "test", "tests", "coverage"))
+        {
+            return "test";
+        }
+
+        if (Mentions(lower, "add", "implement", "introduce", "support", "feature", "new "))
+        {
+            return "feat";
+        }
+
+        return null;
+    }
+
+    private static bool Mentions(string text, params string[] words)
+        => words.Any(word => text.Contains(word, StringComparison.Ordinal));
 
     private static string MergeRequestDescription(AgentTask task, CodingResult result)
     {

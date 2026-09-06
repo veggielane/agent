@@ -1,4 +1,6 @@
+using System.Text.Json;
 using Agent.Channels.GitLab;
+using Agent.Core.Authorization;
 using Agent.Core.Events;
 using Agent.Core.Tasks;
 using NSubstitute;
@@ -20,9 +22,13 @@ public sealed class GitLabPollerTests : IDisposable
     private readonly FixedTimeProvider _time = new(new DateTimeOffset(2026, 9, 4, 10, 0, 0, TimeSpan.Zero));
     private readonly GitLabOptions _options = TestOptions.Default();
 
+    private string? _followUp;
+
     public GitLabPollerTests()
     {
         _tasks.ListAsync(Arg.Any<TaskQuery>(), Arg.Any<CancellationToken>()).Returns(Array.Empty<AgentTask>());
+        _taskService.AddFollowUpAsync(Arg.Any<int>(), Arg.Do<string>(i => _followUp = i), Arg.Any<CallerIdentity>(), Arg.Any<CancellationToken>())
+            .Returns(new AgentTask { Id = 9, Status = AgentTaskStatus.Queued });
         _tasks.FindActiveBySourceAsync(Arg.Any<TaskSource>(), Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns((AgentTask?)null);
         _tasks.FindByMergeRequestAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns((AgentTask?)null);
 
@@ -267,6 +273,297 @@ public sealed class GitLabPollerTests : IDisposable
         await _taskService.Received(1).CloseAsync(10, false, Arg.Any<CancellationToken>());
         await _taskService.DidNotReceive().CloseAsync(11, Arg.Any<bool>(), Arg.Any<CancellationToken>());
         await _taskService.DidNotReceive().CloseAsync(12, Arg.Any<bool>(), Arg.Any<CancellationToken>());
+    }
+
+    // ---- pipeline awareness -----------------------------------------------------------------------------------
+
+    /// <summary>An MR of task #9 whose head pipeline is in <paramref name="status"/>, plus the note endpoint it replies on.</summary>
+    private AgentTask AwaitingReviewWithPipeline(string status, params (string Key, string Value)[] metadata)
+    {
+        var task = new AgentTask
+        {
+            Id = 9,
+            Source = TaskSource.GitLabIssue,
+            SourceRef = "team/repo#12",
+            Status = AgentTaskStatus.AwaitingReview,
+            ProjectId = "42",
+            MergeRequestIid = "7",
+            WorkBranch = "agent/12-fix",
+        };
+        foreach (var (key, value) in metadata)
+        {
+            task.Metadata[key] = value;
+        }
+
+        _tasks.ListAsync(Arg.Is<TaskQuery>(q => q.Statuses!.Contains(AgentTaskStatus.AwaitingReview)), Arg.Any<CancellationToken>()).Returns(new[] { task });
+        _gitlab.Get(
+            "/api/v4/projects/42/merge_requests/7",
+            Payloads.MergeRequest(7, 42, "team/repo", "Add feature", "opened", "agent/12-fix", "main", Payloads.UserRef(7, "agent-bot"), headPipeline: Payloads.Pipeline(900, status)));
+        _gitlab.Post("/api/v4/projects/42/merge_requests/7/notes", Payloads.Note(500, "note", Payloads.UserRef(7, "agent-bot"), "2026-09-04T10:00:00.000Z"));
+        return task;
+    }
+
+    private void FailingJobs()
+    {
+        _gitlab.Get("/api/v4/projects/42/pipelines/900/jobs", new[]
+        {
+            Payloads.Job(1, "build", "success", "build"),
+            Payloads.Job(2, "test", "failed"),
+            Payloads.Job(3, "style", "failed", allowFailure: true),
+        });
+        _gitlab.GetText("/api/v4/projects/42/jobs/2/trace", "Running tests\nLoginTests.Redirect FAILED\nassert 401 == 200\n");
+    }
+
+    [Fact]
+    public async Task PollOnceAsync_FailedPipeline_AddsFollowUpPostsNoteAndRecordsTheAttempt()
+    {
+        var task = AwaitingReviewWithPipeline("failed");
+        FailingJobs();
+
+        var ok = await CreatePoller().PollOnceAsync(TestContext.Current.CancellationToken);
+
+        Assert.True(ok);
+        await _taskService.Received(1).AddFollowUpAsync(9, Arg.Any<string>(), Arg.Any<CallerIdentity>(), Arg.Any<CancellationToken>());
+        Assert.NotNull(_followUp);
+        Assert.Contains("merge request !7", _followUp, StringComparison.Ordinal);
+        Assert.Contains("agent/12-fix", _followUp, StringComparison.Ordinal);
+        Assert.Contains("Failing jobs: test", _followUp, StringComparison.Ordinal);
+        Assert.DoesNotContain("style", _followUp, StringComparison.Ordinal); // allow_failure is not the agent's problem
+        Assert.Contains("LoginTests.Redirect FAILED", _followUp, StringComparison.Ordinal);
+
+        var note = Assert.Single(_gitlab.Requests("POST", "/merge_requests/7/notes"));
+        using var body = JsonDocument.Parse(note.Body!);
+        var text = body.RootElement.GetProperty("body").GetString()!;
+        Assert.Contains("[pipeline #900](https://gitlab.test/team/repo/-/pipelines/900)", text, StringComparison.Ordinal);
+        Assert.Contains("attempt 1 of 2", text, StringComparison.Ordinal);
+
+        await _tasks.Received(1).UpdateAsync(task, Arg.Any<CancellationToken>());
+        Assert.Equal("1", task.Metadata[GitLabPoller.PipelineAttemptsKey]);
+        Assert.Equal("900", task.Metadata[GitLabPoller.PipelineLastIdKey]);
+        Assert.DoesNotContain(GitLabPoller.PipelineGaveUpKey, task.Metadata.Keys);
+    }
+
+    [Fact]
+    public async Task PollOnceAsync_SameFailedPipelineTwice_IsHandledOnce()
+    {
+        AwaitingReviewWithPipeline("failed");
+        FailingJobs();
+        var poller = CreatePoller();
+
+        await poller.PollOnceAsync(TestContext.Current.CancellationToken);
+        await poller.PollOnceAsync(TestContext.Current.CancellationToken);
+
+        await _taskService.Received(1).AddFollowUpAsync(9, Arg.Any<string>(), Arg.Any<CallerIdentity>(), Arg.Any<CancellationToken>());
+        Assert.Single(_gitlab.Requests("POST", "/merge_requests/7/notes"));
+        Assert.Contains("pipeline fixes 1", poller.Status, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task PollOnceAsync_SecondFailedPipeline_UsesTheRemainingAttempt()
+    {
+        var task = AwaitingReviewWithPipeline("failed", (GitLabPoller.PipelineAttemptsKey, "1"), (GitLabPoller.PipelineLastIdKey, "899"));
+        FailingJobs();
+
+        await CreatePoller().PollOnceAsync(TestContext.Current.CancellationToken);
+
+        await _taskService.Received(1).AddFollowUpAsync(9, Arg.Any<string>(), Arg.Any<CallerIdentity>(), Arg.Any<CancellationToken>());
+        Assert.Equal("2", task.Metadata[GitLabPoller.PipelineAttemptsKey]);
+        var note = Assert.Single(_gitlab.Requests("POST", "/merge_requests/7/notes"));
+        Assert.Contains("attempt 2 of 2", JsonDocument.Parse(note.Body!).RootElement.GetProperty("body").GetString()!, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task PollOnceAsync_FixAttemptsExhausted_LeavesItForAHumanAndStops()
+    {
+        var task = AwaitingReviewWithPipeline("failed", (GitLabPoller.PipelineAttemptsKey, "2"), (GitLabPoller.PipelineLastIdKey, "899"));
+        FailingJobs();
+        var poller = CreatePoller();
+
+        await poller.PollOnceAsync(TestContext.Current.CancellationToken);
+        await poller.PollOnceAsync(TestContext.Current.CancellationToken);
+
+        await _taskService.DidNotReceive().AddFollowUpAsync(Arg.Any<int>(), Arg.Any<string>(), Arg.Any<CallerIdentity>(), Arg.Any<CancellationToken>());
+        var note = Assert.Single(_gitlab.Requests("POST", "/merge_requests/7/notes"));
+        var text = JsonDocument.Parse(note.Body!).RootElement.GetProperty("body").GetString()!;
+        Assert.Contains("still failing after 2 attempts", text, StringComparison.Ordinal);
+        Assert.Contains("leaving this merge request for a human", text, StringComparison.Ordinal);
+        Assert.Equal("true", task.Metadata[GitLabPoller.PipelineGaveUpKey]);
+        Assert.Equal("2", task.Metadata[GitLabPoller.PipelineAttemptsKey]);
+        Assert.Empty(_gitlab.Requests("GET", "/pipelines/900/jobs"));
+    }
+
+    [Theory]
+    [InlineData("running")]
+    [InlineData("pending")]
+    [InlineData("success")]
+    [InlineData("canceled")]
+    public async Task PollOnceAsync_PipelineNotFailed_DoesNothing(string status)
+    {
+        AwaitingReviewWithPipeline(status);
+        FailingJobs();
+
+        var ok = await CreatePoller().PollOnceAsync(TestContext.Current.CancellationToken);
+
+        Assert.True(ok);
+        await _taskService.DidNotReceive().AddFollowUpAsync(Arg.Any<int>(), Arg.Any<string>(), Arg.Any<CallerIdentity>(), Arg.Any<CancellationToken>());
+        await _tasks.DidNotReceive().UpdateAsync(Arg.Any<AgentTask>(), Arg.Any<CancellationToken>());
+        Assert.Empty(_gitlab.Requests("POST", "/merge_requests/7/notes"));
+    }
+
+    [Fact]
+    public async Task PollOnceAsync_WatchPipelinesOff_IgnoresTheFailure()
+    {
+        _options.WatchPipelines = false;
+        AwaitingReviewWithPipeline("failed");
+        FailingJobs();
+
+        await CreatePoller().PollOnceAsync(TestContext.Current.CancellationToken);
+
+        await _taskService.DidNotReceive().AddFollowUpAsync(Arg.Any<int>(), Arg.Any<string>(), Arg.Any<CallerIdentity>(), Arg.Any<CancellationToken>());
+        Assert.Empty(_gitlab.Requests("POST", "/merge_requests/7/notes"));
+    }
+
+    [Fact]
+    public async Task PollOnceAsync_MaxAttemptsZero_ReportsTheFailureWithoutRetrying()
+    {
+        _options.MaxPipelineFixAttempts = 0;
+        AwaitingReviewWithPipeline("failed");
+        FailingJobs();
+
+        await CreatePoller().PollOnceAsync(TestContext.Current.CancellationToken);
+
+        await _taskService.DidNotReceive().AddFollowUpAsync(Arg.Any<int>(), Arg.Any<string>(), Arg.Any<CallerIdentity>(), Arg.Any<CancellationToken>());
+        var note = Assert.Single(_gitlab.Requests("POST", "/merge_requests/7/notes"));
+        Assert.Contains("switched off", JsonDocument.Parse(note.Body!).RootElement.GetProperty("body").GetString()!, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task PollOnceAsync_FailedPipelineWithoutFailingJobs_StillQueuesAFix()
+    {
+        AwaitingReviewWithPipeline("failed");
+        _gitlab.Get("/api/v4/projects/42/pipelines/900/jobs", new[] { Payloads.Job(3, "style", "failed", allowFailure: true) });
+
+        await CreatePoller().PollOnceAsync(TestContext.Current.CancellationToken);
+
+        await _taskService.Received(1).AddFollowUpAsync(9, Arg.Any<string>(), Arg.Any<CallerIdentity>(), Arg.Any<CancellationToken>());
+        Assert.Contains("no failing job", _followUp!, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task PollOnceAsync_LongTrace_IsCutToTheConfiguredBudget()
+    {
+        _options.PipelineTraceChars = 200;
+        AwaitingReviewWithPipeline("failed");
+        _gitlab.Get("/api/v4/projects/42/pipelines/900/jobs", new[] { Payloads.Job(2, "test", "failed") });
+        _gitlab.GetText("/api/v4/projects/42/jobs/2/trace", "restoring packages\n" + new string('y', 20_000) + "\nassert 401 == 200");
+
+        await CreatePoller().PollOnceAsync(TestContext.Current.CancellationToken);
+
+        Assert.NotNull(_followUp);
+        Assert.DoesNotContain("restoring packages", _followUp, StringComparison.Ordinal);
+        Assert.Contains("…", _followUp, StringComparison.Ordinal);
+        Assert.Contains("assert 401 == 200", _followUp, StringComparison.Ordinal);
+        Assert.True(_followUp.Length < 1000, $"instruction was {_followUp.Length} characters");
+    }
+
+    [Fact]
+    public async Task PollOnceAsync_TraceUnavailable_StillQueuesAFixNamingTheJob()
+    {
+        AwaitingReviewWithPipeline("failed");
+        _gitlab.Get("/api/v4/projects/42/pipelines/900/jobs", new[] { Payloads.Job(2, "test", "failed") });
+        _gitlab.GetStatus("/api/v4/projects/42/jobs/2/trace", 500, "{\"message\":\"log gone\"}");
+
+        var ok = await CreatePoller().PollOnceAsync(TestContext.Current.CancellationToken);
+
+        Assert.True(ok);
+        Assert.Contains("Failing jobs: test", _followUp!, StringComparison.Ordinal);
+        Assert.Contains("(no log available)", _followUp!, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task PollOnceAsync_PipelineOutcomes_AreCountedOnTheTaskCounter()
+    {
+        AwaitingReviewWithPipeline("failed");
+        FailingJobs();
+        using var transitions = new TransitionRecorder();
+
+        await CreatePoller().PollOnceAsync(TestContext.Current.CancellationToken);
+        _options.MaxPipelineFixAttempts = 1; // the attempt just recorded is now the whole budget
+        AwaitingReviewWithPipeline("failed", (GitLabPoller.PipelineAttemptsKey, "1"), (GitLabPoller.PipelineLastIdKey, "899"));
+        await CreatePoller().PollOnceAsync(TestContext.Current.CancellationToken);
+
+        Assert.Contains("pipeline-failed", transitions.Seen);
+        Assert.Contains("pipeline-fix-exhausted", transitions.Seen);
+    }
+
+    /// <summary>Collects the <c>transition</c> tag of every <c>agent.tasks</c> measurement; the meter is process-wide.</summary>
+    private sealed class TransitionRecorder : IDisposable
+    {
+        private readonly System.Diagnostics.Metrics.MeterListener _listener;
+
+        public TransitionRecorder()
+        {
+            _listener = new System.Diagnostics.Metrics.MeterListener
+            {
+                InstrumentPublished = (instrument, listener) =>
+                {
+                    if (instrument.Name == "agent.tasks")
+                    {
+                        listener.EnableMeasurementEvents(instrument);
+                    }
+                },
+            };
+            _listener.SetMeasurementEventCallback<long>((_, _, tags, _) =>
+            {
+                foreach (var tag in tags)
+                {
+                    if (tag.Key == "transition" && tag.Value is string value)
+                    {
+                        Seen.Add(value);
+                    }
+                }
+            });
+            _listener.Start();
+        }
+
+        public System.Collections.Concurrent.ConcurrentBag<string> Seen { get; } = [];
+
+        public void Dispose() => _listener.Dispose();
+    }
+
+    [Fact]
+    public async Task PollOnceAsync_MergedMrWithFailedPipeline_ClosesTheTaskWithoutFixing()
+    {
+        _tasks.ListAsync(Arg.Is<TaskQuery>(q => q.Statuses!.Contains(AgentTaskStatus.AwaitingReview)), Arg.Any<CancellationToken>())
+            .Returns(new[] { new AgentTask { Id = 9, Status = AgentTaskStatus.AwaitingReview, ProjectId = "42", MergeRequestIid = "7" } });
+        _gitlab.Get(
+            "/api/v4/projects/42/merge_requests/7",
+            Payloads.MergeRequest(7, 42, "team/repo", "Add feature", "merged", "agent/12-fix", "main", Alice, headPipeline: Payloads.Pipeline(900, "failed")));
+
+        await CreatePoller().PollOnceAsync(TestContext.Current.CancellationToken);
+
+        await _taskService.Received(1).CloseAsync(9, true, Arg.Any<CancellationToken>());
+        await _taskService.DidNotReceive().AddFollowUpAsync(Arg.Any<int>(), Arg.Any<string>(), Arg.Any<CallerIdentity>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task PollOnceAsync_OneUnreachableMergeRequest_DoesNotHideTheOthers()
+    {
+        _tasks.ListAsync(Arg.Is<TaskQuery>(q => q.Statuses!.Contains(AgentTaskStatus.AwaitingReview)), Arg.Any<CancellationToken>())
+            .Returns(new[]
+            {
+                new AgentTask { Id = 8, Status = AgentTaskStatus.AwaitingReview, ProjectId = "42", MergeRequestIid = "6" },
+                new AgentTask { Id = 9, Status = AgentTaskStatus.AwaitingReview, ProjectId = "42", MergeRequestIid = "7" },
+            });
+        _gitlab.GetStatus("/api/v4/projects/42/merge_requests/6", 500, "{\"message\":\"boom\"}");
+        _gitlab.Get("/api/v4/projects/42/merge_requests/7", Payloads.MergeRequest(7, 42, "team/repo", "B", "merged", "agent/2", "main", Alice));
+
+        var poller = CreatePoller();
+        var ok = await poller.PollOnceAsync(TestContext.Current.CancellationToken);
+
+        Assert.False(ok);
+        await _taskService.Received(1).CloseAsync(9, true, Arg.Any<CancellationToken>());
+        Assert.Contains("task 8", poller.Status, StringComparison.Ordinal);
     }
 
     [Fact]

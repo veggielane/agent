@@ -45,6 +45,7 @@ public sealed class GitLabPoller : BackgroundService, IEventSource
     private readonly IOptionsMonitor<GitLabOptions> _options;
     private readonly ILogger<GitLabPoller> _logger;
     private readonly TimeProvider _time;
+    private readonly ITaskNotifierRouter? _notifier;
     private readonly ConcurrentDictionary<string, CacheEntry<GitLabProject?>> _projects = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<long, CacheEntry<GitLabUser?>> _users = new();
 
@@ -55,6 +56,7 @@ public sealed class GitLabPoller : BackgroundService, IEventSource
     private int _mergeRequestsClosed;
     private int _pipelineFixes;
 
+    /// <param name="notifier">Mirrors the "fix budget spent" note to the operations channel; the note itself goes on the MR.</param>
     public GitLabPoller(
         IGitLabClient client,
         IInboundQueue queue,
@@ -64,7 +66,8 @@ public sealed class GitLabPoller : BackgroundService, IEventSource
         ITaskService taskService,
         IOptionsMonitor<GitLabOptions> options,
         ILogger<GitLabPoller> logger,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null,
+        ITaskNotifierRouter? notifier = null)
     {
         _client = client;
         _queue = queue;
@@ -75,6 +78,7 @@ public sealed class GitLabPoller : BackgroundService, IEventSource
         _options = options;
         _logger = logger;
         _time = timeProvider ?? TimeProvider.System;
+        _notifier = notifier;
     }
 
     public string Name => "GitLab poller";
@@ -547,13 +551,16 @@ public sealed class GitLabPoller : BackgroundService, IEventSource
         await _tasks.UpdateAsync(task, cancellationToken).ConfigureAwait(false);
 
         var tried = attempts == 1 ? "one attempt" : $"{attempts.ToString(CultureInfo.InvariantCulture)} attempts";
-        await _client.CreateMergeRequestNoteAsync(
-            task.ProjectId!,
-            iid,
-            attempts == 0
-                ? "The pipeline for this merge request failed. Automatic fixes are switched off for this agent, so this one needs a human."
-                : $"The pipeline is still failing after {tried} to fix it. I am leaving this merge request for a human.",
-            cancellationToken).ConfigureAwait(false);
+        var note = attempts == 0
+            ? "The pipeline for this merge request failed. Automatic fixes are switched off for this agent, so this one needs a human."
+            : $"The pipeline is still failing after {tried} to fix it. I am leaving this merge request for a human.";
+        await _client.CreateMergeRequestNoteAsync(task.ProjectId!, iid, note, cancellationToken).ConfigureAwait(false);
+
+        if (_notifier is not null)
+        {
+            var link = string.IsNullOrEmpty(task.MergeRequestUrl) ? $"!{iid.ToString(CultureInfo.InvariantCulture)}" : task.MergeRequestUrl;
+            await _notifier.MirrorAsync(task, new TaskNotification($"pipeline-gave-up:{pipelineId}", $"{note}\n\nMerge request: {link}", Terminal: true), cancellationToken).ConfigureAwait(false);
+        }
 
         Agent.Core.Observability.AgentTelemetry.Tasks.Add(1, new System.Diagnostics.TagList
         {

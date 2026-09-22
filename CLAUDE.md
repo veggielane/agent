@@ -61,12 +61,21 @@ One core, thin adapters. Everything flows through `Agent.Core`:
   AwaitingReview → Done/Closed; plus Failed/NeedsInput/Cancelled/Interrupted). `ITaskService` creates,
   follows up, cancels. `Agent.Worker` claims queued tasks and drives `Agent.Coding`'s `ICodingEngine`
   (clone → branch → LLM loop with file/search/edit/run tools → verify → commit → push → MR via
-  `IMergeRequestPublisher`). Progress goes back through `ITaskNotifierRouter`.
+  `IMergeRequestPublisher`). Progress goes back through `ITaskNotifierRouter`: plain markdown for
+  progress, a keyed `TaskNotification` for anything that must post once (the key is claimed in
+  `IProcessedEventStore` before sending), and `Terminal` notifications are copied to every
+  `ITaskNotificationMirror` (Mattermost's posts to `Mattermost:OpsChannelId`). `IRepositoryPolicy`
+  decides which repositories a task may target; Core allows all, `GitLabRepositoryPolicy` enforces
+  `GitLab:AllowedProjects`, and `TaskService.CreateAsync` throws `RepositoryNotAllowedException` with a
+  requester-facing reason that every caller relays.
 - **Coding engines** (`Agent.Coding`): `CodingEngineSelector` picks per run from `Coding:Engine`.
   `CodingEngine` is the built-in loop; `OpenCode/OpenCodeCodingEngine` shells out to the opencode CLI in the
   same sandbox. `OpenCodeConfigWriter` translates our policy (allowed executables, protected paths) into
   opencode permission rules, and the engine re-checks protected paths against `git status` afterwards. The
   opencode event schema is not ours, so `OpenCodeOutput` parses tolerantly and falls back to raw text.
+  `CodingToolset` reports every write, edit and command as a `CodingAction` through `CodingRun.Actions`
+  (paths and command lines only, never contents); `TaskRunner` writes them to the task event log as
+  `tool.write` / `tool.edit` / `tool.run`.
 - **Sandbox** (`Agent.Coding/Sandbox`): `ISandbox` supplies one `ISandboxSession` per coding run, and only
   the `run` tool and build/test verification go through it — git, credentials, and file edits stay on the
   host. `SandboxSelector` picks by `Coding:Sandbox:Mode`: `Process` (host child processes, the default) or

@@ -51,6 +51,7 @@ public sealed class ServiceCollectionExtensionsTests
         Assert.IsType<MattermostReplySender>(Assert.Single(provider.GetServices<IReplySender>()));
         Assert.IsType<MattermostConversationContextProvider>(Assert.Single(provider.GetServices<IConversationContextProvider>()));
         Assert.IsType<MattermostTaskNotifier>(Assert.Single(provider.GetServices<ITaskNotifier>()));
+        Assert.IsType<MattermostTaskMirror>(Assert.Single(provider.GetServices<ITaskNotificationMirror>()));
         Assert.IsType<ClientWebSocketMattermostSocketFactory>(provider.GetRequiredService<IMattermostSocketFactory>());
         Assert.IsType<MattermostUserDirectory>(provider.GetRequiredService<IMattermostUserDirectory>());
         Assert.NotNull(provider.GetRequiredService<MattermostEventMapper>());

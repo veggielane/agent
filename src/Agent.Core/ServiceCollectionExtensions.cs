@@ -76,6 +76,7 @@ public static class ServiceCollectionExtensions
         services.TryAddSingleton<ITaskCancellationRegistry, TaskCancellationRegistry>();
         services.TryAddSingleton<ITaskService, TaskService>();
         services.TryAddSingleton<ITaskNotifierRouter, TaskNotifierRouter>();
+        services.TryAddSingleton<IRepositoryPolicy, AllowAllRepositoryPolicy>();
 
         // Pipeline
         services.TryAddSingleton<IProcessedEventStore, InMemoryProcessedEventStore>();

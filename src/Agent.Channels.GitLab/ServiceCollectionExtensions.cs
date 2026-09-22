@@ -7,6 +7,7 @@ using Agent.Core.Tools;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Http.Resilience;
 using Microsoft.Extensions.Options;
 
 namespace Agent.Channels.GitLab;
@@ -33,11 +34,13 @@ public static class ServiceCollectionExtensions
                 http.Timeout = TimeSpan.FromSeconds(100);
             })
             .AddHttpMessageHandler<GitLabAuthenticationHandler>()
-            .AddStandardResilienceHandler();
+            // A note or merge request that GitLab accepted but answered slowly must not be posted again.
+            .AddStandardResilienceHandler(options => options.Retry.DisableForUnsafeHttpMethods());
 
         services.TryAddEnumerable(ServiceDescriptor.Singleton<IToolSource, GitLabTools>());
         services.TryAddSingleton<IMergeRequestPublisher, GitLabMergeRequestPublisher>();
         services.TryAddSingleton<IRepositoryCredentialProvider, GitLabCredentialProvider>();
+        services.Replace(ServiceDescriptor.Singleton<IRepositoryPolicy, GitLabRepositoryPolicy>());
 
         // !fix lives with the client, not the poller: the CLI and every other channel start tasks with it too.
         services.AddCommandHandlers<GitLabFixCommand>();

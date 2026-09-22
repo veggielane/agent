@@ -42,11 +42,13 @@ public sealed class CodingToolset
     private readonly IGitRunner _git;
     private readonly CodingRunState _state;
     private readonly ILogger _logger;
+    private readonly IProgress<CodingAction>? _actions;
 
     /// <param name="sandbox">
     /// Where <c>run</c> and verification commands execute. Omit to run them as host processes
     /// (<see cref="ProcessSandboxSession"/>), which is what the process sandbox mode does.
     /// </param>
+    /// <param name="actions">Told about every file written and command run, for the task's event log.</param>
     public CodingToolset(
         Workspace workspace,
         CodingOptions options,
@@ -54,13 +56,15 @@ public sealed class CodingToolset
         IGitRunner git,
         CodingRunState state,
         ILogger logger,
-        ISandboxSession? sandbox = null)
+        ISandboxSession? sandbox = null,
+        IProgress<CodingAction>? actions = null)
     {
         _workspace = workspace;
         _options = options;
         _git = git;
         _state = state;
         _logger = logger;
+        _actions = actions;
         Sandbox = sandbox ?? new ProcessSandboxSession(processes, workspace);
 
         Paths = new PathGuard(workspace.RepoPath, options.ProtectedPaths.Concat(workspace.Profile.ExtraProtectedPaths));
@@ -312,6 +316,7 @@ public sealed class CodingToolset
 
             Directory.CreateDirectory(Path.GetDirectoryName(full)!);
             File.WriteAllText(full, content ?? string.Empty, new UTF8Encoding(false));
+            _actions?.Report(new CodingAction(CodingActionKind.Write, Paths.ToRelative(full)));
             return $"wrote {Paths.ToRelative(full)} ({(content ?? string.Empty).Length} characters)";
         }
         catch (Exception ex)
@@ -376,6 +381,7 @@ public sealed class CodingToolset
             var idx = text.IndexOf(find, StringComparison.Ordinal);
             var updated = string.Concat(text.AsSpan(0, idx), replacement, text.AsSpan(idx + find.Length));
             File.WriteAllText(full, updated, new UTF8Encoding(false));
+            _actions?.Report(new CodingAction(CodingActionKind.Edit, Paths.ToRelative(full)));
             return $"edited {Paths.ToRelative(full)}";
         }
         catch (Exception ex)
@@ -409,6 +415,7 @@ public sealed class CodingToolset
         catch (CodingPolicyException ex)
         {
             _state.CommandsRun.Add($"{command} (rejected)");
+            _actions?.Report(new CodingAction(CodingActionKind.Run, $"{TextUtil.TruncateEnd(TextUtil.FirstLine(command), 500)} (rejected)"));
             return (false, "error: " + ex.Message);
         }
 
@@ -442,7 +449,7 @@ public sealed class CodingToolset
             return (false, Error(ex));
         }
 
-        RecordCommand(result.TimedOut ? "timeout" : result.Success ? "ok" : "failed", startedAt, parsed);
+        RecordCommand(result.TimedOut ? "timeout" : result.Success ? "ok" : "failed", startedAt, parsed, result.ExitCode);
         activity.Tag("agent.command.exit_code", result.ExitCode);
 
         var sb = new StringBuilder();
@@ -466,7 +473,7 @@ public sealed class CodingToolset
         return (result.Success, Bound(sb.ToString()));
     }
 
-    private void RecordCommand(string outcome, long from, ParsedCommand command)
+    private void RecordCommand(string outcome, long from, ParsedCommand command, int? exitCode = null)
     {
         var tags = new TagList
         {
@@ -476,6 +483,11 @@ public sealed class CodingToolset
         };
         AgentTelemetry.SandboxCommands.Add(1, tags);
         AgentTelemetry.SandboxCommandDuration.Record(Stopwatch.GetElapsedTime(from).TotalSeconds, tags);
+
+        var detail = exitCode is { } code && outcome != "ok"
+            ? $"{command} ({outcome}, exit {code})"
+            : $"{command} ({outcome})";
+        _actions?.Report(new CodingAction(CodingActionKind.Run, TextUtil.TruncateEnd(detail, 500)));
     }
 
     public async Task<string> GitDiffAsync(CancellationToken cancellationToken = default)

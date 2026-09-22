@@ -39,6 +39,7 @@ public sealed class InboundProcessor : IInboundProcessor
     private readonly IConversationContextRouter _contexts;
     private readonly IReplyRouter _replies;
     private readonly IRepositoryResolver? _repos;
+    private readonly IRepositoryPolicy _repositoryPolicy;
     private readonly IServiceProvider _services;
     private readonly IOptionsMonitor<AuthorizationOptions> _authOptions;
     private readonly IOptionsMonitor<PipelineOptions> _options;
@@ -58,7 +59,8 @@ public sealed class InboundProcessor : IInboundProcessor
         IOptionsMonitor<AuthorizationOptions> authOptions,
         IOptionsMonitor<PipelineOptions> options,
         ILogger<InboundProcessor> logger,
-        IRepositoryResolver? repos = null)
+        IRepositoryResolver? repos = null,
+        IRepositoryPolicy? repositoryPolicy = null)
     {
         _processed = processed;
         _roles = roles;
@@ -74,6 +76,7 @@ public sealed class InboundProcessor : IInboundProcessor
         _options = options;
         _logger = logger;
         _repos = repos;
+        _repositoryPolicy = repositoryPolicy ?? new AllowAllRepositoryPolicy();
     }
 
     public async Task ProcessAsync(InboundEvent evt, CancellationToken cancellationToken)
@@ -210,7 +213,17 @@ public sealed class InboundProcessor : IInboundProcessor
         }
 
         await _replies.AcknowledgeAsync(evt, AckState.Working, null, ct).ConfigureAwait(false);
-        var task = await _tasks.CreateAsync(request, ct).ConfigureAwait(false);
+        AgentTask task;
+        try
+        {
+            task = await _tasks.CreateAsync(request, ct).ConfigureAwait(false);
+        }
+        catch (RepositoryNotAllowedException ex)
+        {
+            await _replies.AcknowledgeAsync(evt, AckState.Failed, null, ct).ConfigureAwait(false);
+            await _replies.SendAsync(evt, ex.Message, ct).ConfigureAwait(false);
+            return;
+        }
 
         var message = task.Status == AgentTaskStatus.NeedsInput
             ? $"Created task #{task.Id}, but I could not resolve a repository for it. Reply with the GitLab repository URL and mention me."
@@ -259,6 +272,14 @@ public sealed class InboundProcessor : IInboundProcessor
 
         if (task.Status == AgentTaskStatus.NeedsInput && evt.Task?.RepoUrl is null && TryExtractRepoUrl(evt.Text) is { } repo)
         {
+            var decision = _repositoryPolicy.Check(repo);
+            if (!decision.Allowed)
+            {
+                _logger.LogWarning("Task {Task}: repository {Repo} named by {Caller} is not allowed", task.DisplayRef, repo, caller.DisplayName);
+                await _replies.SendAsync(evt, decision.Reason ?? "That repository is not allowed.", ct).ConfigureAwait(false);
+                return;
+            }
+
             task.RepoUrl = repo;
             await _taskStore.UpdateAsync(task, ct).ConfigureAwait(false);
         }

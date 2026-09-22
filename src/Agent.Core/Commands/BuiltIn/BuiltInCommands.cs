@@ -176,8 +176,15 @@ public sealed class BuiltInCommands
         return CommandResult.Text(sb.ToString().TrimEnd());
     }
 
-    [Command("task", "Show one task with its recent events", Role = Role.Users)]
-    public static async Task<CommandResult> Task(CommandContext ctx, [Arg("Task id")] int id, CancellationToken ct)
+    /// <summary>Event types that trace what the coding loop did (commands run, files written); shown on request only.</summary>
+    private const string ToolEventPrefix = "tool.";
+
+    [Command("task", "Show one task with its recent events (--actions lists what the coding loop ran and wrote)", Role = Role.Users)]
+    public static async Task<CommandResult> Task(
+        CommandContext ctx,
+        [Arg("Task id")] int id,
+        [Option("actions", "Include the recorded tool actions: commands run and files written")] bool actions = false,
+        CancellationToken ct = default)
     {
         var tasks = ctx.Services.GetRequiredService<ITaskService>();
         var t = await tasks.GetAsync(id, ct).ConfigureAwait(false);
@@ -191,7 +198,12 @@ public sealed class BuiltInCommands
             return CommandResult.Error("That task belongs to someone else.");
         }
 
-        var events = await tasks.GetEventsAsync(id, 15, ct).ConfigureAwait(false);
+        // Tool actions can outnumber lifecycle events many times over, so the default view leaves them out.
+        var recent = await tasks.GetEventsAsync(id, actions ? 60 : 120, ct).ConfigureAwait(false);
+        var toolEvents = recent.Count(e => e.Type.StartsWith(ToolEventPrefix, StringComparison.Ordinal));
+        var events = actions
+            ? recent.TakeLast(40).ToList()
+            : recent.Where(e => !e.Type.StartsWith(ToolEventPrefix, StringComparison.Ordinal)).TakeLast(15).ToList();
         var sb = new StringBuilder();
         sb.Append("**Task #").Append(t.Id).Append("** — ").AppendLine(t.Status.ToString());
         sb.Append("- source: ").Append(t.Source).Append(' ').Append(t.SourceRef).Append(t.SourceUrl is null ? string.Empty : $" ({t.SourceUrl})").AppendLine();
@@ -222,9 +234,14 @@ public sealed class BuiltInCommands
             sb.Append("- pending follow-up: ").AppendLine(Shorten(t.PendingInstruction, 200));
         }
 
+        if (toolEvents > 0 && !actions)
+        {
+            sb.Append("- tool actions: ").Append(toolEvents).Append(" recorded (`!task ").Append(t.Id).AppendLine(" --actions` lists them)");
+        }
+
         if (events.Count > 0)
         {
-            sb.AppendLine().AppendLine("_Recent events_");
+            sb.AppendLine().AppendLine(actions ? "_Recent events and tool actions_" : "_Recent events_");
             foreach (var e in events)
             {
                 sb.Append("- ").Append(e.At.ToString("u")).Append(' ').Append(e.Type).Append(": ").AppendLine(e.Message);

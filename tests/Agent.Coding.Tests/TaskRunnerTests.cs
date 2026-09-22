@@ -14,10 +14,16 @@ public sealed class TaskRunnerTests : IDisposable
     private readonly ITaskNotifierRouter _notifier = Substitute.For<ITaskNotifierRouter>();
     private readonly IMergeRequestPublisher _mergeRequests = Substitute.For<IMergeRequestPublisher>();
     private readonly List<string> _notifications = [];
+    private readonly List<TaskNotification> _keyed = [];
 
     public TaskRunnerTests()
     {
         _notifier.NotifyAsync(Arg.Any<AgentTask>(), Arg.Do<string>(_notifications.Add), Arg.Any<CancellationToken>()).Returns(Task.CompletedTask);
+        _notifier.NotifyAsync(Arg.Any<AgentTask>(), Arg.Do<TaskNotification>(n =>
+        {
+            _keyed.Add(n);
+            _notifications.Add(n.Markdown);
+        }), Arg.Any<CancellationToken>()).Returns(Task.CompletedTask);
         _mergeRequests.EnsureMergeRequestAsync(Arg.Any<MergeRequestSpec>(), Arg.Any<CancellationToken>())
             .Returns(ci => new MergeRequestInfo("7", "https://gitlab.local/group/repo/-/merge_requests/7", "opened", ci.Arg<MergeRequestSpec>().SourceBranch));
     }
@@ -26,14 +32,14 @@ public sealed class TaskRunnerTests : IDisposable
 
     private string WorkspaceRoot => _dir.Combine("work");
 
-    private (TaskRunner Runner, GitRunner Git) Create(ICodingEngine engine, bool withMergeRequests = true, ITaskPlanner? planner = null, Action<CodingOptions>? configure = null)
+    private (TaskRunner Runner, GitRunner Git) Create(ICodingEngine engine, bool withMergeRequests = true, ITaskPlanner? planner = null, Action<CodingOptions>? configure = null, IRepositoryPolicy? repositories = null)
     {
         var options = TestOptions.Coding(WorkspaceRoot, configure);
         var monitor = TestOptions.Monitor(options);
         var processes = new CliWrapProcessRunner(monitor, NullLogger<CliWrapProcessRunner>.Instance);
         var git = new GitRunner(processes, NullLogger<GitRunner>.Instance);
         var workspaces = new WorkspaceManager(git, monitor, NullLogger<WorkspaceManager>.Instance);
-        var runner = new TaskRunner(_store, _cancellations, workspaces, engine, git, _notifier, monitor, NullLogger<TaskRunner>.Instance, null, withMergeRequests ? _mergeRequests : null, planner);
+        var runner = new TaskRunner(_store, _cancellations, workspaces, engine, git, _notifier, monitor, NullLogger<TaskRunner>.Instance, null, withMergeRequests ? _mergeRequests : null, planner, repositories);
         return (runner, git);
     }
 
@@ -203,6 +209,105 @@ public sealed class TaskRunnerTests : IDisposable
         Assert.Contains(events, e => e.Type == "published");
         Assert.Empty(Directory.EnumerateDirectories(WorkspaceRoot));
         Assert.Empty(_cancellations.RunningTaskIds);
+    }
+
+    [Fact]
+    public async Task RunAsync_TerminalNotification_IsKeyedByAttempt_AndThePlanIsNot()
+    {
+        GitTestHelper.SkipIfMissing();
+        var url = GitTestHelper.CreateBareRepoWithCommit(_dir.Path);
+        var task = await QueueTaskAsync(url);
+        var (runner, _) = Create(EngineWriting("GREETING.md", "hello\n"), planner: new FakePlanner("I will add a greeting."));
+
+        await runner.RunAsync(task, TestContext.Current.CancellationToken);
+
+        Assert.Equal(1, task.Attempts);
+        var plan = Assert.Single(_keyed, n => n.Key == "plan");
+        Assert.False(plan.Terminal);
+        var published = Assert.Single(_keyed, n => n.Key == "published:1");
+        Assert.True(published.Terminal);
+        Assert.StartsWith("Opened MR", published.Markdown, StringComparison.Ordinal);
+        Assert.Equal(2, _keyed.Count);
+        await _notifier.DidNotReceiveWithAnyArgs().NotifyAsync(default!, default(string)!, default);
+    }
+
+    [Fact]
+    public async Task RunAsync_Failure_IsAKeyedTerminalNotification()
+    {
+        GitTestHelper.SkipIfMissing();
+        var url = GitTestHelper.CreateBareRepoWithCommit(_dir.Path);
+        var task = await QueueTaskAsync(url);
+        var (runner, _) = Create(new FakeCodingEngine((_, _) => throw new InvalidOperationException("engine exploded")));
+
+        await runner.RunAsync(task, TestContext.Current.CancellationToken);
+
+        var failed = Assert.Single(_keyed);
+        Assert.Equal("failed:1", failed.Key);
+        Assert.True(failed.Terminal);
+        Assert.Contains("engine exploded", failed.Markdown, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task RunAsync_RecordsToolActionsAsEvents_AndNamesThePushedFiles()
+    {
+        GitTestHelper.SkipIfMissing();
+        var url = GitTestHelper.CreateBareRepoWithCommit(_dir.Path);
+        var task = await QueueTaskAsync(url);
+        var engine = new FakeCodingEngine(run =>
+        {
+            run.Actions!.Report(new CodingAction(CodingActionKind.Run, "dotnet build (ok)"));
+            run.Actions.Report(new CodingAction(CodingActionKind.Write, "GREETING.md"));
+            run.Actions.Report(new CodingAction(CodingActionKind.Edit, "README.md"));
+            File.WriteAllText(Path.Combine(run.Workspace.RepoPath, "GREETING.md"), "hello\n");
+            File.AppendAllText(Path.Combine(run.Workspace.RepoPath, "README.md"), "more\n");
+            return new CodingResult("Added a greeting.", ["GREETING.md", "README.md"], ["dotnet build"], true, "ok", 2, 100, CodingStopReason.Done, null);
+        });
+        var (runner, _) = Create(engine);
+
+        await runner.RunAsync(task, TestContext.Current.CancellationToken);
+
+        var events = await _store.GetEventsAsync(task.Id, 50, TestContext.Current.CancellationToken);
+        var tools = events.Where(e => e.Type.StartsWith("tool.", StringComparison.Ordinal)).Select(e => $"{e.Type} {e.Message}").ToList();
+        Assert.Equal(["tool.run dotnet build (ok)", "tool.write GREETING.md", "tool.edit README.md"], tools);
+        var working = events.Single(e => e.Type == "working");
+        Assert.All(events.Where(e => e.Type.StartsWith("tool.", StringComparison.Ordinal)), e => Assert.True(e.Id > working.Id));
+        var pushed = events.Single(e => e.Type == "pushed");
+        Assert.Equal("Pushed agent/group-repo-12-add-greeting (2 changed files): GREETING.md, README.md", pushed.Message);
+        Assert.True(pushed.Id > events.Last(e => e.Type.StartsWith("tool.", StringComparison.Ordinal)).Id);
+    }
+
+    [Fact]
+    public async Task RunAsync_RepositoryRefusedByPolicy_FailsWithTheReasonWithoutCloning()
+    {
+        var task = await QueueTaskAsync("https://gitlab.test/other/repo.git");
+        var policy = Substitute.For<IRepositoryPolicy>();
+        policy.Check("https://gitlab.test/other/repo.git").Returns(RepositoryDecision.Deny("`other/repo` is not among the projects I may work on."));
+        var engine = new FakeCodingEngine(_ => throw new InvalidOperationException("must not run"));
+        var (runner, _) = Create(engine, repositories: policy);
+
+        await runner.RunAsync(task, TestContext.Current.CancellationToken);
+
+        var final = (await _store.GetAsync(task.Id, TestContext.Current.CancellationToken))!;
+        Assert.Equal(AgentTaskStatus.Failed, final.Status);
+        Assert.Equal("`other/repo` is not among the projects I may work on.", final.Error);
+        Assert.False(Directory.Exists(WorkspaceRoot));
+        var denied = Assert.Single(_keyed);
+        Assert.Equal("repository-denied:1", denied.Key);
+        Assert.True(denied.Terminal);
+        Assert.Contains("`other/repo` is not among the projects I may work on.", denied.Markdown, StringComparison.Ordinal);
+        Assert.Contains((await _store.GetEventsAsync(task.Id, 50, TestContext.Current.CancellationToken)), e => e.Type == "failed" && e.Message.Contains("other/repo", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void PushedMessage_NamesTheFiles_AndCountsTheRestPastTheCap()
+    {
+        Assert.Equal("Pushed agent/x (0 changed files)", TaskRunner.PushedMessage("agent/x", []));
+        Assert.Equal("Pushed agent/x (2 changed files): a.cs, b.cs", TaskRunner.PushedMessage("agent/x", ["a.cs", "b.cs"]));
+
+        var many = Enumerable.Range(1, 45).Select(i => $"f{i}.cs").ToList();
+        var message = TaskRunner.PushedMessage("agent/x", many);
+        Assert.StartsWith("Pushed agent/x (45 changed files): f1.cs, ", message, StringComparison.Ordinal);
+        Assert.EndsWith("f40.cs … (+5 more)", message, StringComparison.Ordinal);
     }
 
     [Fact]

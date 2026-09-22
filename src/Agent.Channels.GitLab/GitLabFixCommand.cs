@@ -223,7 +223,16 @@ public sealed class GitLabFixCommand
             return AlreadyRunning(existing, request.SourceRef);
         }
 
-        var task = await _tasks.CreateAsync(request, cancellationToken).ConfigureAwait(false);
+        AgentTask task;
+        try
+        {
+            task = await _tasks.CreateAsync(request, cancellationToken).ConfigureAwait(false);
+        }
+        catch (RepositoryNotAllowedException ex)
+        {
+            return CommandResult.Error(ex.Message);
+        }
+
         _logger.LogInformation("Task {Task} created by !fix from {Channel} ({Conversation})", task.DisplayRef, task.NotifyChannel, task.ConversationId);
 
         var sb = new StringBuilder();

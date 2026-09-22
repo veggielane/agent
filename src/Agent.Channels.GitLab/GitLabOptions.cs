@@ -30,6 +30,13 @@ public sealed class GitLabOptions
     /// <summary>Group paths or ids whose labelled issues become tasks (subgroups included).</summary>
     public string[] Groups { get; set; } = [];
 
+    /// <summary>
+    /// Group or project paths (<c>platform</c>, <c>platform/billing</c>) that coding tasks may target, on this GitLab
+    /// host only. Applies to every way a task gets a repository: labels, assignments, mentions, Jira mappings,
+    /// <c>!fix</c>, the API and follow-ups. Empty means no restriction beyond what the bot token can reach.
+    /// </summary>
+    public string[] AllowedProjects { get; set; } = [];
+
     public string TaskLabel { get; set; } = "agent";
 
     /// <summary>Whether assigning an issue to the bot starts a task.</summary>

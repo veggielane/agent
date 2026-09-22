@@ -7,6 +7,7 @@ using Agent.Core.Tasks;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using NSubstitute;
+using NSubstitute.ExceptionExtensions;
 using Xunit;
 
 namespace Agent.Channels.GitLab.Tests;
@@ -335,5 +336,17 @@ public sealed class GitLabFixCommandTests : IDisposable
 
         Assert.False(result.IsError);
         Assert.Contains("could not work out which repository", result.Markdown, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Fix_RepositoryRefusedByPolicy_SaysWhyInsteadOfFailing()
+    {
+        _taskService.CreateAsync(Arg.Any<TaskRequest>(), Arg.Any<CancellationToken>())
+            .ThrowsAsync(new RepositoryNotAllowedException("https://gitlab.test/team/repo.git", "`team/repo` is not among the projects I may work on. Ask an administrator to add it to `GitLab:AllowedProjects`."));
+
+        var result = await RunAsync("team/repo#12");
+
+        Assert.True(result.IsError);
+        Assert.Contains("`team/repo` is not among the projects I may work on", result.Markdown, StringComparison.Ordinal);
     }
 }

@@ -104,6 +104,38 @@ public sealed class BuiltInCommandsTests
     }
 
     [Fact]
+    public async Task Task_HidesToolActionsUntilAskedFor()
+    {
+        using var host = TestHost.Create();
+        var bob = await host.ResolveAsync("bob");
+        var tasks = host.Get<ITaskService>();
+        var created = await tasks.CreateAsync(new TaskRequest
+        {
+            Source = TaskSource.GitLabIssue,
+            SourceRef = "team/repo#1",
+            Requester = bob,
+            Instruction = "Do the thing",
+            RepoUrl = "https://gitlab.internal/team/repo.git",
+            ConversationId = "team/repo#1",
+            NotifyChannel = Channel.GitLab,
+        });
+        await tasks.RecordEventAsync(created.Id, "tool.write", "src/Thing.cs");
+        await tasks.RecordEventAsync(created.Id, "tool.run", "dotnet test (failed, exit 1)");
+        await tasks.RecordEventAsync(created.Id, "pushed", "Pushed agent/x (1 changed files): src/Thing.cs");
+
+        var plain = await RunAsync(host, "bob", $"!task {created.Id}");
+        Assert.Contains("tool actions: 2 recorded", plain.Markdown);
+        Assert.Contains("--actions", plain.Markdown);
+        Assert.Contains("pushed:", plain.Markdown);
+        Assert.DoesNotContain("tool.run:", plain.Markdown);
+
+        var detailed = await RunAsync(host, "bob", $"!task {created.Id} --actions");
+        Assert.Contains("tool.write: src/Thing.cs", detailed.Markdown);
+        Assert.Contains("tool.run: dotnet test (failed, exit 1)", detailed.Markdown);
+        Assert.DoesNotContain("tool actions:", detailed.Markdown);
+    }
+
+    [Fact]
     public async Task Cancel_OwnershipRules()
     {
         using var host = TestHost.Create();

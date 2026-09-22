@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
+using Agent.Core.Tasks;
 using Agent.Host.Tests.Support;
 
 namespace Agent.Host.Tests;
@@ -113,6 +114,26 @@ public sealed class ApiTests : IDisposable
         _factory.Llm.Client.Reply("next");
         await Post<ChatDto>(client, "/api/chat", new { text = "more", conversationId = "s1" });
         Assert.Equal("streamed words here", _factory.Llm.Client.Calls[1][2].Text.Trim());
+    }
+
+    [Fact]
+    public async Task Tasks_Create_RepositoryRefusedByPolicy_Is403WithTheReason()
+    {
+        _factory.RepositoryPolicy = new DenyingPolicy();
+        var team = _factory.CreateClientFor("bob", "/agent/team");
+
+        var response = await team.PostAsJsonAsync("/api/tasks", new { repoUrl = "https://gitlab.test/other/repo.git", instruction = "do it" }, TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        var body = await response.Content.ReadFromJsonAsync<JsonElement>(Json, TestContext.Current.CancellationToken);
+        Assert.Equal("`other/repo` is not among the projects I may work on.", body.GetProperty("error").GetString());
+        var mine = await team.GetFromJsonAsync<List<TaskDto>>("/api/tasks", Json, TestContext.Current.CancellationToken);
+        Assert.Empty(mine!);
+    }
+
+    private sealed class DenyingPolicy : IRepositoryPolicy
+    {
+        public RepositoryDecision Check(string repoUrl) => RepositoryDecision.Deny("`other/repo` is not among the projects I may work on.");
     }
 
     [Fact]

@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using Agent.Core.Audit;
 using Agent.Core.Authorization;
 using Agent.Core.Observability;
 using Microsoft.Extensions.Logging;
@@ -10,18 +11,43 @@ public sealed class TaskService : ITaskService
     private readonly ITaskStore _store;
     private readonly ITaskQueueSignal _signal;
     private readonly ITaskCancellationRegistry _cancellations;
+    private readonly IRepositoryPolicy _repositories;
+    private readonly IAuditSink _audit;
     private readonly ILogger<TaskService> _logger;
 
-    public TaskService(ITaskStore store, ITaskQueueSignal signal, ITaskCancellationRegistry cancellations, ILogger<TaskService> logger)
+    public TaskService(
+        ITaskStore store,
+        ITaskQueueSignal signal,
+        ITaskCancellationRegistry cancellations,
+        IRepositoryPolicy repositories,
+        IAuditSink audit,
+        ILogger<TaskService> logger)
     {
         _store = store;
         _signal = signal;
         _cancellations = cancellations;
+        _repositories = repositories;
+        _audit = audit;
         _logger = logger;
     }
 
+    /// <exception cref="RepositoryNotAllowedException">The repository policy refuses <see cref="TaskRequest.RepoUrl"/>.</exception>
     public async Task<AgentTask> CreateAsync(TaskRequest request, CancellationToken cancellationToken = default)
     {
+        if (!string.IsNullOrWhiteSpace(request.RepoUrl))
+        {
+            var decision = _repositories.Check(request.RepoUrl);
+            if (!decision.Allowed)
+            {
+                var reason = decision.Reason ?? "The repository is not allowed.";
+                await _audit.WriteAsync(
+                    new AuditEntry(DateTimeOffset.UtcNow, request.Requester.Channel, request.Requester.ChannelUserId, request.Requester.DisplayName, "task.create", "denied", $"{request.SourceRef}: {request.RepoUrl}", request.Requester.Roles),
+                    cancellationToken).ConfigureAwait(false);
+                _logger.LogWarning("Task for {SourceRef} by {Requester} refused: repository {Repo} is not allowed", request.SourceRef, request.Requester.DisplayName, request.RepoUrl);
+                throw new RepositoryNotAllowedException(request.RepoUrl, reason);
+            }
+        }
+
         var task = new AgentTask
         {
             Source = request.Source,

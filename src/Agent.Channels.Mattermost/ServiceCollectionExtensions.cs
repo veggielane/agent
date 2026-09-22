@@ -30,6 +30,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IReplySender, MattermostReplySender>();
         services.AddSingleton<IConversationContextProvider, MattermostConversationContextProvider>();
         services.AddSingleton<ITaskNotifier, MattermostTaskNotifier>();
+        services.TryAddEnumerable(ServiceDescriptor.Singleton<ITaskNotificationMirror, MattermostTaskMirror>());
 
         return services;
     }

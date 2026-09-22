@@ -9,6 +9,7 @@ using Agent.Core.Tasks;
 using Agent.Core.Tools;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
 using Xunit;
@@ -47,6 +48,34 @@ public sealed class ServiceCollectionExtensionsTests : IDisposable
         Assert.Equal("agent-bot", me.Username);
         var request = Assert.Single(_gitlab.Requests("GET", "/api/v4/user"));
         Assert.Equal("glpat-from-config", request.Headers!["PRIVATE-TOKEN"].Single());
+    }
+
+    [Fact]
+    public async Task AddGitLabClient_DoesNotRetryPosts_SoASlowNoteIsNeverPostedTwice()
+    {
+        _gitlab.Post("/api/v4/projects/42/issues/12/notes", new { message = "503 Service Unavailable" }, 503);
+        var services = new ServiceCollection().AddLogging().AddGitLabClient(Configuration());
+        using var provider = services.BuildServiceProvider();
+
+        var client = provider.GetRequiredService<IGitLabClient>();
+        await Assert.ThrowsAsync<GitLabApiException>(() => client.CreateIssueNoteAsync("42", 12, "hello", TestContext.Current.CancellationToken));
+
+        Assert.Single(_gitlab.Requests("POST", "/issues/12/notes"));
+    }
+
+    [Fact]
+    public void AddGitLabClient_ReplacesTheCoreRepositoryPolicy_WhicheverIsRegisteredFirst()
+    {
+        var afterCore = new ServiceCollection().AddLogging();
+        afterCore.TryAddSingleton<IRepositoryPolicy, AllowAllRepositoryPolicy>();
+        afterCore.AddGitLabClient(Configuration());
+        using var providerAfter = afterCore.BuildServiceProvider();
+        Assert.IsType<GitLabRepositoryPolicy>(providerAfter.GetRequiredService<IRepositoryPolicy>());
+
+        var beforeCore = new ServiceCollection().AddLogging().AddGitLabClient(Configuration());
+        beforeCore.TryAddSingleton<IRepositoryPolicy, AllowAllRepositoryPolicy>();
+        using var providerBefore = beforeCore.BuildServiceProvider();
+        Assert.IsType<GitLabRepositoryPolicy>(providerBefore.GetRequiredService<IRepositoryPolicy>());
     }
 
     [Fact]

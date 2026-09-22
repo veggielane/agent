@@ -92,7 +92,7 @@ public sealed class OpenCodeCodingEngine : ICodingEngine
         }
 
         var state = new CodingRunState();
-        var toolset = new CodingToolset(workspace, options, _processes, _git, state, _loggerFactory.CreateLogger<CodingToolset>(), session);
+        var toolset = new CodingToolset(workspace, options, _processes, _git, state, _loggerFactory.CreateLogger<CodingToolset>(), session, run.Actions);
         var stopwatch = Stopwatch.StartNew();
         var budget = TimeSpan.FromMinutes(Math.Max(1, options.Budget.MaxMinutes));
 

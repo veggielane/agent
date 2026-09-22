@@ -341,7 +341,13 @@ tests/
 - Git access: HTTPS with `oauth2:<token>` supplied through a credential helper by the orchestrator at
   clone/push time only; never in the coding loop's environment.
 - Idempotency: a to-do is marked done only after its event is stored; note ids and issue ids go into
-  `ProcessedEvents`. Edited notes do not re-trigger.
+  `ProcessedEvents`. Edited notes do not re-trigger. The HTTP client does not retry POST/PUT/DELETE
+  (`DisableForUnsafeHttpMethods`): a note GitLab accepted but answered slowly is never posted twice.
+- Repository allow list: `GitLab.AllowedProjects` (group or project paths on this host) bounds every way a
+  task acquires a repository — label, assignment, mention, Jira mapping, `!fix`, the API, and a follow-up
+  that names a URL. `GitLabRepositoryPolicy` implements Core's `IRepositoryPolicy`; `TaskService` refuses
+  creation with the reason (audited as `task.create` / `denied`) and the worker checks again before it
+  clones. Empty keeps the pre-existing behaviour: the bot token is the only boundary.
 - Load per interval: one to-do call, one issues call per group, one call per awaiting task. Far below
   GitLab's default rate limits; latency is at most one interval.
 
@@ -405,7 +411,15 @@ Flow for a new task:
    trailers `Requested-by`, `Refs: <source ref>`, `Task: #42`), push, open MR (draft if verification
    failed or budget exhausted), set the requester as reviewer, link the issue.
 8. Final comment on the ticket and in the MR description: what changed, what was run, what was not
-   verified, budget used.
+   verified, budget used. Every message the runner posts is a `TaskNotification` with a key
+   (`plan`, `published:<attempt>`, `failed:<attempt>`, ...): `TaskNotifierRouter` records the key in
+   `ProcessedEvents` before posting, so a restarted worker or a repeated poll never says the same thing
+   twice. Terminal notifications (MR opened, failed, needs input, no changes, cancelled, CI fix given up)
+   are also copied to every `ITaskNotificationMirror` — the Mattermost channel provides one that posts to
+   `Mattermost.OpsChannelId` when set; progress stays on the originating thread.
+   The task event log also carries the coding loop's trail: `tool.write` / `tool.edit` (repository paths)
+   and `tool.run` (command line and outcome), reported by `CodingToolset` through `CodingRun.Actions` as
+   they happen; `!task <id> --actions` lists them, and the `pushed` event names the changed files.
 9. **Watch the merge request's pipeline** (6.5). A failed pipeline becomes a follow-up instruction
    carrying the failing jobs and their log tails, bounded by `GitLab.MaxPipelineFixAttempts`; when the
    attempts run out the agent says so on the MR and leaves it for a human.
@@ -810,12 +824,12 @@ The agent now executes commands and pushes code, so the threat model matters mor
 | Unauthorized person triggers work | `Team` role check (via AD groups) on the *requester of each instruction*, including follow-ups; audit log. |
 | Prompt injection via ticket text, repo files, or comments from unauthorized users | Only text from authorized requesters is treated as instruction; everything else is data. Read-only Q&A tools; allow-listed commands; protected paths; no secrets in the loop's environment; human MR review. |
 | Exfiltration via CI config edits | `.gitlab-ci.yml` and deploy manifests are protected paths by default. |
-| Bot token misuse | Bot is Developer, not Maintainer; protected branches; token scoped to needed groups; token used only by the orchestrator for clone/push/API, never exposed to tools. |
+| Bot token misuse | Bot is Developer, not Maintainer; protected branches; token scoped to needed groups; `GitLab:AllowedProjects` refuses any other repository in code, whatever the token can reach; token used only by the orchestrator for clone/push/API, never exposed to tools. |
 | Runaway cost / loops | Per-task budgets (turns, tokens, time, `run` count); global concurrency cap; per-user daily task cap **[decide]**. |
 | Destructive commands | Allow-list + workspace-only paths; no `rm`-style tools; git reset/clean only by orchestrator. |
 | Compromised build script / dependency | Container per task (6.9): capabilities dropped, memory/CPU/PID limits, configurable egress (`none` blocks it), and no credential inside the container — git and tokens stay on the host. |
 | Inbound spoofing | All channels are pull-based (WebSocket client or polling); there is no inbound endpoint to spoof. The CLI API requires a Keycloak-issued bearer token, is intranet-only, and can be disabled. |
-| Traceability | Commit trailers (`Requested-by`, `Task`), MR description with full summary, audit + task event log. |
+| Traceability | Commit trailers (`Requested-by`, `Task`), MR description with full summary, audit + task event log including every file the coding loop wrote and every command it ran (`tool.*` events; paths and command lines, never contents). |
 | Command abuse | Role-gated commands (Users / Team / Admin) checked before parsing; typed binding rejects unexpected input; YAML commands can only use registered tools; admin commands audited. |
 | MCP tool misuse | Tools filtered per caller role before the model sees them; allow/deny globs; timeouts and result caps; per-call audit; stdio servers get a scrubbed env; tool output treated as untrusted. Side-effecting servers should be `Role: Team` or higher with an explicit allow list. |
 
@@ -845,14 +859,14 @@ The agent now executes commands and pushes code, so the threat model matters mor
   "Mattermost": { "BaseUrl": "…", "BotToken": "<secret>", "RespondToDirectMessages": true,
                   "RespondToMentions": true, "GroupMessagesRequireMention": true,
                   "ThreadFollowMinutes": 120, "DmHistoryMessages": 30, "ChannelAllowList": [],
-                  "AckReaction": "eyes", "StreamByEditing": false },
+                  "OpsChannelId": "", "AckReaction": "eyes", "StreamByEditing": false },
   "Jira": { "BaseUrl": "…", "Username": "agent-bot", "Token": "<secret>",
             "PollSeconds": 30, "OverlapMinutes": 2, "Projects": ["PROJ", "OPS"],
             "TaskLabel": "agent", "RepositoryField": "customfield_12345",
             "ProjectRepos": { "PROJ": "https://gitlab.internal/team/proj" } },
   "GitLab": { "BaseUrl": "https://gitlab.internal", "Token": "<secret>", "BotUsername": "agent-bot",
-              "PollSeconds": 30, "Groups": ["team"], "TaskLabel": "agent", "TaskOnAssign": true,
-              "FollowUpsOnForeignMrs": false },
+              "PollSeconds": 30, "Groups": ["team"], "AllowedProjects": ["team"], "TaskLabel": "agent",
+              "TaskOnAssign": true, "FollowUpsOnForeignMrs": false },
   "Coding": { "WorkspaceRoot": "D:\\agent-work", "MaxConcurrentTasks": 2,
               "Budget": { "MaxTurns": 60, "MaxTokens": 400000, "MaxMinutes": 30, "MaxRuns": 25 },
               "AllowedExecutables": ["git","dotnet","node","npm","npx","make","python"],
@@ -978,15 +992,15 @@ Mattermost, in-process MCP servers over pipes, local bare git repositories for t
 
 | Component | Project | Tests |
 |-----------|---------|-------|
-| Core: pipeline, roles, commands, tools, tasks, LLM factory, telemetry | `Agent.Core` | 129 |
-| Mattermost (WebSocket, threads, DMs, reactions, splitting) | `Agent.Channels.Mattermost` | 116 |
-| Jira DC (polling, wiki formatter, tools, repo resolver) | `Agent.Channels.Jira` | 164 |
-| GitLab (to-do polling, labelled issues, MR publisher, pipeline watch, `!fix`, tools) | `Agent.Channels.GitLab` | 211 |
-| Coding engine + worker (native and opencode engines, plan step, workspace, git, budgets, MR flow, container sandbox, `.engex.yml` policy) | `Agent.Coding`, `Agent.Worker` | 254 |
+| Core: pipeline, roles, commands, tools, tasks, keyed notifications + mirrors, repository policy, LLM factory, telemetry | `Agent.Core` | 141 |
+| Mattermost (WebSocket, threads, DMs, reactions, splitting, ops-channel mirror) | `Agent.Channels.Mattermost` | 122 |
+| Jira DC (polling, wiki formatter, tools, repo resolver) | `Agent.Channels.Jira` | 165 |
+| GitLab (to-do polling, labelled issues, MR publisher, pipeline watch, `!fix`, tools, project allow list) | `Agent.Channels.GitLab` | 232 |
+| Coding engine + worker (native and opencode engines, plan step, workspace, git, budgets, MR flow, container sandbox, `.engex.yml` policy, tool-action trail) | `Agent.Coding`, `Agent.Worker` | 266 |
 | Persistence (EF Core, SQL Server migration), Keycloak, LDAP | `Agent.Persistence`, `Agent.Infrastructure.*` | 60 |
 | MCP client, governance, `!mcp` | `Agent.Mcp` | 124 |
-| Host API (JWT bearer, chat/SSE, tasks) and CLI remote backend | `Agent.Host`, `Agent.Cli` | 18 |
-| **Total** | | **1076, all passing** |
+| Host API (JWT bearer, chat/SSE, tasks) and CLI remote backend | `Agent.Host`, `Agent.Cli` | 19 |
+| **Total** | | **1129, all passing** |
 
 Milestone mapping: M0–M8 are implemented, plus the M9 per-task **container sandbox** (6.9;
 `Coding:Sandbox:Mode = Docker`, default stays `Process`) and per-repository containers through `.engex.yml`

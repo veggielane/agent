@@ -8,6 +8,7 @@ using Agent.Core.Tools;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Http.Resilience;
 using Microsoft.Extensions.Options;
 
 namespace Agent.Channels.Jira;
@@ -48,6 +49,9 @@ public static class ServiceCollectionExtensions
                 options.AttemptTimeout.Timeout = TimeSpan.FromSeconds(30);
                 options.TotalRequestTimeout.Timeout = TimeSpan.FromSeconds(90);
                 options.CircuitBreaker.SamplingDuration = TimeSpan.FromSeconds(60);
+
+                // A comment Jira accepted but answered slowly must not be posted again.
+                options.Retry.DisableForUnsafeHttpMethods();
             });
 
         services.TryAddEnumerable(ServiceDescriptor.Singleton<IToolSource, JiraTools>());

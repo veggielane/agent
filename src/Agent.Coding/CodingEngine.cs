@@ -24,12 +24,14 @@ public enum CodingStopReason
     Error,
 }
 
+/// <param name="Actions">Receives every file written and command run as it happens; null when nobody is listening.</param>
 public sealed record CodingRun(
     Workspace Workspace,
     string Instruction,
     string? PreviousSummary,
     bool IsFollowUp,
-    CallerIdentity Requester);
+    CallerIdentity Requester,
+    IProgress<CodingAction>? Actions = null);
 
 public sealed record CodingResult(
     string Summary,
@@ -133,7 +135,7 @@ public sealed class CodingEngine : ICodingEngine
         runActivity.Tag("agent.sandbox.mode", session.Mode);
         _logger.LogInformation("Task #{Task} runs commands in {Sandbox}: {Description}", workspace.TaskId, _sandbox.Name, session.Description);
 
-        var toolset = new CodingToolset(workspace, options, _processes, _git, state, _loggerFactory.CreateLogger<CodingToolset>(), session);
+        var toolset = new CodingToolset(workspace, options, _processes, _git, state, _loggerFactory.CreateLogger<CodingToolset>(), session, run.Actions);
 
         using var requestScope = RequestContext.Begin(run.Requester);
 

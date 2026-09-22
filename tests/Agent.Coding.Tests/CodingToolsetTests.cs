@@ -8,6 +8,7 @@ public sealed class CodingToolsetTests : IDisposable
     private readonly TempDir _dir = new();
     private readonly CodingRunState _state = new();
     private readonly IGitRunner _git = Substitute.For<IGitRunner>();
+    private readonly ListProgress<CodingAction> _actions = new();
 
     public void Dispose() => _dir.Dispose();
 
@@ -16,7 +17,7 @@ public sealed class CodingToolsetTests : IDisposable
         var options = TestOptions.Coding(_dir.Path, configure);
         var workspace = new Workspace(1, _dir.Path, _dir.Path, "agent/x", "main", profile ?? RepoProfile.Empty);
         var processes = new CliWrapProcessRunner(TestOptions.Monitor(options), NullLogger<CliWrapProcessRunner>.Instance);
-        return new CodingToolset(workspace, options, processes, _git, _state, NullLogger.Instance);
+        return new CodingToolset(workspace, options, processes, _git, _state, NullLogger.Instance, actions: _actions);
     }
 
     [Fact]
@@ -260,6 +261,64 @@ public sealed class CodingToolsetTests : IDisposable
         var output = await tools.RunAsync("git --version", TestContext.Current.CancellationToken);
 
         Assert.Contains("run budget", output, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void WriteFile_ReportsThePathAsAWriteAction_NeverTheContent()
+    {
+        Create().WriteFile("src/new.txt", "secret content");
+
+        var action = Assert.Single(_actions.Items);
+        Assert.Equal(new CodingAction(CodingActionKind.Write, "src/new.txt"), action);
+    }
+
+    [Fact]
+    public void WriteFile_Refused_ReportsNoAction()
+    {
+        Create().WriteFile(".gitlab-ci.yml", "x");
+
+        Assert.Empty(_actions.Items);
+    }
+
+    [Fact]
+    public void EditFile_ReportsThePathAsAnEditAction()
+    {
+        _dir.Write("src/a.txt", "one two three");
+
+        Create().EditFile("src/a.txt", "two", "2");
+
+        Assert.Equal([new CodingAction(CodingActionKind.Edit, "src/a.txt")], _actions.Items);
+    }
+
+    [Fact]
+    public async Task Run_ReportsTheCommandWithItsOutcome()
+    {
+        GitTestHelper.SkipIfMissing();
+
+        await Create().RunAsync("git --version", TestContext.Current.CancellationToken);
+
+        Assert.Equal([new CodingAction(CodingActionKind.Run, "git --version (ok)")], _actions.Items);
+    }
+
+    [Fact]
+    public async Task Run_FailingCommand_ReportsTheExitCode()
+    {
+        GitTestHelper.SkipIfMissing();
+
+        // The temp directory is not a repository, so an allowed git command fails with a non-zero exit code.
+        await Create().RunAsync("git status", TestContext.Current.CancellationToken);
+
+        var action = Assert.Single(_actions.Items);
+        Assert.Equal(CodingActionKind.Run, action.Kind);
+        Assert.StartsWith("git status (failed, exit ", action.Detail, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Run_RejectedCommand_ReportsTheRejection()
+    {
+        await Create().RunAsync("curl http://example.com", TestContext.Current.CancellationToken);
+
+        Assert.Equal([new CodingAction(CodingActionKind.Run, "curl http://example.com (rejected)")], _actions.Items);
     }
 
     [Fact]

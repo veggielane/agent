@@ -95,6 +95,23 @@ public sealed class CodingEngineTests : IDisposable
     }
 
     [Fact]
+    public async Task RunAsync_ReportsWritesAndCommandsToTheRunsActionListener()
+    {
+        var script = new ScriptedChatClient()
+            .ThenToolCall("write_file", new Dictionary<string, object?> { ["path"] = "src/hello.txt", ["content"] = "hello" })
+            .ThenToolCall("run", new Dictionary<string, object?> { ["command"] = "curl http://example.com" })
+            .ThenToolCall("done", new Dictionary<string, object?> { ["summary"] = "Done." });
+        var (engine, workspace) = Build(script);
+        var actions = new ListProgress<CodingAction>();
+
+        await engine.RunAsync(Run(workspace) with { Actions = actions }, null, TestContext.Current.CancellationToken);
+
+        Assert.Equal(
+            [new CodingAction(CodingActionKind.Write, "src/hello.txt"), new CodingAction(CodingActionKind.Run, "curl http://example.com (rejected)")],
+            actions.Items);
+    }
+
+    [Fact]
     public async Task RunAsync_WriteFileThenDone_WritesFileAndStopsWithDone()
     {
         var script = new ScriptedChatClient()

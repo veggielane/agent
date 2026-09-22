@@ -2,6 +2,8 @@ using Agent.Core.Authorization;
 using Agent.Core.Channels;
 using Agent.Core.Tasks;
 using Agent.Core.Tests.Support;
+using Microsoft.Extensions.DependencyInjection;
+using NSubstitute;
 
 namespace Agent.Core.Tests.Tasks;
 
@@ -37,6 +39,36 @@ public sealed class TaskServiceTests
         Assert.True(await signal.WaitAsync(TimeSpan.FromMilliseconds(50), Ct));
         var events = await service.GetEventsAsync(task.Id, cancellationToken: Ct);
         Assert.Equal("created", events.Single().Type);
+    }
+
+    [Fact]
+    public async Task Create_RepositoryRefusedByPolicy_ThrowsWithTheReasonAndAudits()
+    {
+        var policy = Substitute.For<IRepositoryPolicy>();
+        policy.Check(Arg.Any<string>()).Returns(RepositoryDecision.Deny("`t/r` is not among the projects I may work on."));
+        using var host = TestHost.Create(s => s.AddSingleton(policy));
+        var service = host.Get<ITaskService>();
+
+        var ex = await Assert.ThrowsAsync<RepositoryNotAllowedException>(() => service.CreateAsync(Request(), Ct));
+
+        Assert.Equal("`t/r` is not among the projects I may work on.", ex.Message);
+        Assert.Equal("https://gitlab.internal/t/r.git", ex.RepoUrl);
+        Assert.Null(await service.GetAsync(1, Ct));
+        var audit = Assert.Single(host.Audit.Entries, e => e.Action == "task.create");
+        Assert.Equal("denied", audit.Outcome);
+        Assert.Contains("t/r#1", audit.Detail, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Create_WithoutRepo_SkipsThePolicyAndNeedsInput()
+    {
+        var policy = Substitute.For<IRepositoryPolicy>();
+        using var host = TestHost.Create(s => s.AddSingleton(policy));
+
+        var task = await host.Get<ITaskService>().CreateAsync(Request(repo: null), Ct);
+
+        Assert.Equal(AgentTaskStatus.NeedsInput, task.Status);
+        policy.DidNotReceiveWithAnyArgs().Check(default!);
     }
 
     [Fact]

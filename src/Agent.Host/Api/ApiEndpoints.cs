@@ -206,19 +206,27 @@ public static class ApiEndpoints
         }
 
         var sourceRef = $"cli-{DateTimeOffset.UtcNow:yyyyMMddHHmmss}-{Guid.NewGuid():N}"[..28];
-        var task = await tasks.CreateAsync(new TaskRequest
+        AgentTask task;
+        try
         {
-            Source = TaskSource.Cli,
-            SourceRef = sourceRef,
-            Title = request.Title ?? FirstLine(request.Instruction),
-            Requester = caller,
-            Instruction = request.Instruction,
-            RepoUrl = request.RepoUrl,
-            ProjectId = request.ProjectId ?? ProjectPathFromUrl(request.RepoUrl),
-            BaseBranch = request.BaseBranch,
-            ConversationId = sourceRef,
-            NotifyChannel = Channel.Cli,
-        }, ct);
+            task = await tasks.CreateAsync(new TaskRequest
+            {
+                Source = TaskSource.Cli,
+                SourceRef = sourceRef,
+                Title = request.Title ?? FirstLine(request.Instruction),
+                Requester = caller,
+                Instruction = request.Instruction,
+                RepoUrl = request.RepoUrl,
+                ProjectId = request.ProjectId ?? ProjectPathFromUrl(request.RepoUrl),
+                BaseBranch = request.BaseBranch,
+                ConversationId = sourceRef,
+                NotifyChannel = Channel.Cli,
+            }, ct);
+        }
+        catch (RepositoryNotAllowedException ex)
+        {
+            return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status403Forbidden);
+        }
 
         return Results.Created($"/api/tasks/{task.Id}", TaskDto.From(task));
     }

@@ -25,6 +25,9 @@ public sealed class AgentApiFactory : WebApplicationFactory<Program>
 
     public FakeChatClientFactory Llm { get; } = new();
 
+    /// <summary>Set before the first client is created to replace the repository policy the host registers.</summary>
+    public Agent.Core.Tasks.IRepositoryPolicy? RepositoryPolicy { get; set; }
+
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         Directory.CreateDirectory(_workDir);
@@ -62,6 +65,10 @@ public sealed class AgentApiFactory : WebApplicationFactory<Program>
         builder.ConfigureTestServices(services =>
         {
             services.Replace(ServiceDescriptor.Singleton<IChatClientFactory>(Llm));
+            if (RepositoryPolicy is not null)
+            {
+                services.Replace(ServiceDescriptor.Singleton(RepositoryPolicy));
+            }
 
             // These tests exercise the HTTP surface, not the background pipeline. Leaving the workers in
             // means the task worker races each test, claiming queued tasks and trying to clone them.

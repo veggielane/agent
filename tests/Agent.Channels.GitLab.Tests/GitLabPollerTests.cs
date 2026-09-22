@@ -373,6 +373,25 @@ public sealed class GitLabPollerTests : IDisposable
     }
 
     [Fact]
+    public async Task PollOnceAsync_FixAttemptsExhausted_MirrorsTheGiveUpNoteOnce()
+    {
+        var task = AwaitingReviewWithPipeline("failed", (GitLabPoller.PipelineAttemptsKey, "2"), (GitLabPoller.PipelineLastIdKey, "899"));
+        task.MergeRequestUrl = "https://gitlab.test/team/repo/-/merge_requests/7";
+        FailingJobs();
+        var router = Substitute.For<ITaskNotifierRouter>();
+        var poller = new GitLabPoller(_gitlab.Client, _queue, _processed, _cursors, _tasks, _taskService, TestOptions.Monitor(_options), Loggers.For<GitLabPoller>(), _time, router);
+
+        await poller.PollOnceAsync(TestContext.Current.CancellationToken);
+        await poller.PollOnceAsync(TestContext.Current.CancellationToken);
+
+        await router.Received(1).MirrorAsync(
+            task,
+            Arg.Is<TaskNotification>(n => n.Key == "pipeline-gave-up:900" && n.Terminal && n.Markdown.Contains("leaving this merge request for a human") && n.Markdown.Contains("merge_requests/7")),
+            Arg.Any<CancellationToken>());
+        await router.DidNotReceiveWithAnyArgs().NotifyAsync(default!, default(TaskNotification)!, default);
+    }
+
+    [Fact]
     public async Task PollOnceAsync_FixAttemptsExhausted_LeavesItForAHumanAndStops()
     {
         var task = AwaitingReviewWithPipeline("failed", (GitLabPoller.PipelineAttemptsKey, "2"), (GitLabPoller.PipelineLastIdKey, "899"));

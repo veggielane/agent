@@ -38,6 +38,12 @@ public sealed class MattermostOptions
     /// </summary>
     public string[] ChannelAllowList { get; set; } = [];
 
+    /// <summary>
+    /// Channel id that receives a copy of every terminal task event: merge request opened, task failed, needs
+    /// input, CI fix given up. Progress stays on the originating thread. Empty disables the mirror.
+    /// </summary>
+    public string OpsChannelId { get; set; } = string.Empty;
+
     /// <summary>Emoji added to the triggering post while the agent works.</summary>
     public string AckReaction { get; set; } = "eyes";
 

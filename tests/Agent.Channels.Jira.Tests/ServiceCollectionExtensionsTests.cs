@@ -106,6 +106,18 @@ public sealed class ServiceCollectionExtensionsTests : IDisposable
     }
 
     [Fact]
+    public async Task AddJiraClient_DoesNotRetryPosts_SoASlowCommentIsNeverPostedTwice()
+    {
+        _server.Given(WireMock.RequestBuilders.Request.Create().WithPath("/rest/api/2/issue/PROJ-1/comment").UsingPost())
+            .RespondWith(Stubs.Error(503, "warming up"));
+        await using var provider = CoreStubs().AddJiraClient(Configuration()).BuildServiceProvider();
+
+        await Assert.ThrowsAsync<JiraApiException>(() => provider.GetRequiredService<IJiraClient>().AddCommentAsync("PROJ-1", "hello", _ct));
+
+        Assert.Single(_server.LogEntries.Where(e => string.Equals(e.RequestMessage.Method, "POST", StringComparison.OrdinalIgnoreCase)));
+    }
+
+    [Fact]
     public async Task AddJiraClient_RetriesTransientFailuresThroughTheStandardHandler()
     {
         _server.Given(WireMock.RequestBuilders.Request.Create().WithPath("/rest/api/2/myself").UsingGet())

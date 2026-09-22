@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text;
 using Agent.Coding;
 using Agent.Core.Authorization;
@@ -18,6 +19,9 @@ public sealed class TaskRunner : ITaskRunner
 {
     private static readonly TimeSpan ProgressInterval = TimeSpan.FromSeconds(10);
 
+    /// <summary>How many changed files the "pushed" event names before it counts the rest.</summary>
+    private const int MaxListedFiles = 40;
+
     private readonly ITaskStore _store;
     private readonly ITaskCancellationRegistry _cancellations;
     private readonly IWorkspaceManager _workspaces;
@@ -29,7 +33,12 @@ public sealed class TaskRunner : ITaskRunner
     private readonly IRepositoryCredentialProvider? _credentials;
     private readonly IMergeRequestPublisher? _mergeRequests;
     private readonly ITaskPlanner? _planner;
+    private readonly IRepositoryPolicy _repositories;
 
+    /// <param name="repositories">
+    /// Checked again before cloning, so a task whose repository was attached outside the usual paths (an edited
+    /// row, an old task after the allow list changed) fails with the reason instead of running.
+    /// </param>
     public TaskRunner(
         ITaskStore store,
         ITaskCancellationRegistry cancellations,
@@ -41,7 +50,8 @@ public sealed class TaskRunner : ITaskRunner
         ILogger<TaskRunner> logger,
         IRepositoryCredentialProvider? credentials = null,
         IMergeRequestPublisher? mergeRequests = null,
-        ITaskPlanner? planner = null)
+        ITaskPlanner? planner = null,
+        IRepositoryPolicy? repositories = null)
     {
         _store = store;
         _cancellations = cancellations;
@@ -54,6 +64,7 @@ public sealed class TaskRunner : ITaskRunner
         _credentials = credentials;
         _mergeRequests = mergeRequests;
         _planner = planner;
+        _repositories = repositories ?? new AllowAllRepositoryPolicy();
     }
 
     public async Task RunAsync(AgentTask task, CancellationToken cancellationToken)
@@ -132,7 +143,19 @@ public sealed class TaskRunner : ITaskRunner
             task.Summary = "No repository is associated with this task.";
             await SaveAsync(task, token).ConfigureAwait(false);
             await EventAsync(task, "needs-input", "No repository URL").ConfigureAwait(false);
-            await NotifyAsync(task, "I don't know which repository this task belongs to. Tell me the repository (or set it on the ticket) and I'll start.").ConfigureAwait(false);
+            await NotifyAsync(task, Terminal(task, "needs-input", "I don't know which repository this task belongs to. Tell me the repository (or set it on the ticket) and I'll start.")).ConfigureAwait(false);
+            return null;
+        }
+
+        var decision = _repositories.Check(task.RepoUrl);
+        if (!decision.Allowed)
+        {
+            var reason = decision.Reason ?? "The repository is not allowed.";
+            task.Status = AgentTaskStatus.Failed;
+            task.Error = TextUtil.TruncateEnd(reason, 2000);
+            await SaveAsync(task, token).ConfigureAwait(false);
+            await EventAsync(task, "failed", $"Repository not allowed: {task.RepoUrl}").ConfigureAwait(false);
+            await NotifyAsync(task, Terminal(task, "repository-denied", "I can't work on this repository. " + reason)).ConfigureAwait(false);
             return null;
         }
 
@@ -167,7 +190,9 @@ public sealed class TaskRunner : ITaskRunner
         }
 
         await EventAsync(task, "plan", TextUtil.TruncateEnd(TextUtil.FirstLine(plan), 200)).ConfigureAwait(false);
-        await NotifyAsync(task, $"{plan}\n\n_Working on `{workspace.Branch}`. Cancel with `!cancel {task.Id}` if this is not what you meant._").ConfigureAwait(false);
+
+        // Keyed without the attempt: a worker that restarts mid-run must not announce the same plan twice.
+        await NotifyAsync(task, new TaskNotification("plan", $"{plan}\n\n_Working on `{workspace.Branch}`. Cancel with `!cancel {task.Id}` if this is not what you meant._")).ConfigureAwait(false);
     }
 
     private async Task<CodingResult> WorkAsync(AgentTask task, Workspace workspace, CancellationToken token)
@@ -190,10 +215,20 @@ public sealed class TaskRunner : ITaskRunner
         await SaveAsync(task, token).ConfigureAwait(false);
         await EventAsync(task, "working", firstRun ? "Coding started" : "Follow-up started").ConfigureAwait(false);
 
-        var run = new CodingRun(workspace, instruction, firstRun ? null : task.Summary, IsFollowUp: !firstRun, Requester(task));
+        var actions = new ActionLog(action => EventAsync(task, ActionEventType(action.Kind), action.Detail), _logger, task);
+        var run = new CodingRun(workspace, instruction, firstRun ? null : task.Summary, IsFollowUp: !firstRun, Requester(task), actions);
         var progress = new ThrottledProgress(message => EventAsync(task, "progress", message), ProgressInterval);
 
-        var result = await _engine.RunAsync(run, progress, token).ConfigureAwait(false);
+        CodingResult result;
+        try
+        {
+            result = await _engine.RunAsync(run, progress, token).ConfigureAwait(false);
+        }
+        finally
+        {
+            // The trail must be complete before the outcome is recorded, whatever the outcome was.
+            await actions.Completion.ConfigureAwait(false);
+        }
 
         task.Turns += result.Turns;
         task.TokensUsed += result.TokensUsed;
@@ -223,7 +258,7 @@ public sealed class TaskRunner : ITaskRunner
             }
 
             noChanges.Append("\n\nReply with more details to continue.");
-            await NotifyAsync(task, noChanges.ToString()).ConfigureAwait(false);
+            await NotifyAsync(task, Terminal(task, "no-changes", noChanges.ToString())).ConfigureAwait(false);
             return;
         }
 
@@ -232,7 +267,7 @@ public sealed class TaskRunner : ITaskRunner
         await _git.AddAllAsync(workspace.RepoPath, token).ConfigureAwait(false);
         await _git.CommitAsync(workspace.RepoPath, CommitMessage(task, result, options.ConventionalCommits), options.CommitAuthorName, options.CommitAuthorEmail, token).ConfigureAwait(false);
         await _git.PushAsync(workspace.RepoPath, branch, credentials, setUpstream: true, token).ConfigureAwait(false);
-        await EventAsync(task, "pushed", $"Pushed {branch} ({result.ChangedFiles.Count} changed files)").ConfigureAwait(false);
+        await EventAsync(task, "pushed", PushedMessage(branch, result.ChangedFiles)).ConfigureAwait(false);
 
         var verification = result.Verified switch
         {
@@ -270,7 +305,7 @@ public sealed class TaskRunner : ITaskRunner
         }
 
         message.Append("\n\n").Append(result.Summary).Append("\n\nVerified: ").Append(verification);
-        await NotifyAsync(task, message.ToString()).ConfigureAwait(false);
+        await NotifyAsync(task, Terminal(task, "published", message.ToString())).ConfigureAwait(false);
     }
 
     private async Task CancelledAsync(AgentTask task)
@@ -279,7 +314,7 @@ public sealed class TaskRunner : ITaskRunner
         task.Status = AgentTaskStatus.Cancelled;
         await SaveAsync(task, CancellationToken.None).ConfigureAwait(false);
         await EventAsync(task, "cancelled", "Stopped by cancellation").ConfigureAwait(false);
-        await NotifyAsync(task, "Task cancelled.").ConfigureAwait(false);
+        await NotifyAsync(task, Terminal(task, "cancelled", "Task cancelled.")).ConfigureAwait(false);
     }
 
     private async Task InterruptedAsync(AgentTask task)
@@ -306,7 +341,7 @@ public sealed class TaskRunner : ITaskRunner
         {
             await SaveAsync(task, CancellationToken.None).ConfigureAwait(false);
             await EventAsync(task, "failed", task.Error).ConfigureAwait(false);
-            await NotifyAsync(task, "Task failed: " + TextUtil.TruncateEnd(ex.Message, 1500)).ConfigureAwait(false);
+            await NotifyAsync(task, Terminal(task, "failed", "Task failed: " + TextUtil.TruncateEnd(ex.Message, 1500))).ConfigureAwait(false);
         }
         catch (Exception inner)
         {
@@ -357,16 +392,44 @@ public sealed class TaskRunner : ITaskRunner
     private Task EventAsync(AgentTask task, string type, string message)
         => _store.AddEventAsync(new TaskEvent(task.Id, DateTimeOffset.UtcNow, type, TextUtil.TruncateEnd(message, 4000)), CancellationToken.None);
 
-    private async Task NotifyAsync(AgentTask task, string markdown)
+    private async Task NotifyAsync(AgentTask task, TaskNotification notification)
     {
         try
         {
-            await _notifier.NotifyAsync(task, markdown, CancellationToken.None).ConfigureAwait(false);
+            await _notifier.NotifyAsync(task, notification, CancellationToken.None).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Notification for task {Task} failed", task.DisplayRef);
+            _logger.LogWarning(ex, "Notification {Key} for task {Task} failed", notification.Key, task.DisplayRef);
         }
+    }
+
+    /// <summary>
+    /// A terminal notification for this attempt. The attempt number is part of the key so a retried task reports
+    /// again, while a duplicate within one attempt (a worker restarted mid-publish, say) is posted once.
+    /// </summary>
+    internal static TaskNotification Terminal(AgentTask task, string kind, string markdown)
+        => new($"{kind}:{task.Attempts.ToString(CultureInfo.InvariantCulture)}", markdown, Terminal: true);
+
+    /// <summary>The event-log type for a coding action: <c>tool.write</c>, <c>tool.edit</c>, <c>tool.run</c>.</summary>
+    internal static string ActionEventType(CodingActionKind kind) => "tool." + kind.ToString().ToLowerInvariant();
+
+    internal static string PushedMessage(string branch, IReadOnlyList<string> changedFiles)
+    {
+        var sb = new StringBuilder();
+        sb.Append("Pushed ").Append(branch).Append(" (").Append(changedFiles.Count).Append(" changed files)");
+        if (changedFiles.Count == 0)
+        {
+            return sb.ToString();
+        }
+
+        sb.Append(": ").Append(string.Join(", ", changedFiles.Take(MaxListedFiles)));
+        if (changedFiles.Count > MaxListedFiles)
+        {
+            sb.Append(" … (+").Append(changedFiles.Count - MaxListedFiles).Append(" more)");
+        }
+
+        return sb.ToString();
     }
 
     private static CallerIdentity Requester(AgentTask task)
@@ -556,6 +619,58 @@ public sealed class TaskRunner : ITaskRunner
             }
 
             _ = _sink(value);
+        }
+    }
+
+    /// <summary>
+    /// Writes every coding action to the event log in the order it happened, off the engine's thread, and lets
+    /// the runner wait for the last write. A failed write is logged and dropped: the trail is worth having, not
+    /// worth failing the task over.
+    /// </summary>
+    private sealed class ActionLog : IProgress<CodingAction>
+    {
+        private readonly Func<CodingAction, Task> _sink;
+        private readonly ILogger _logger;
+        private readonly AgentTask _task;
+        private readonly Lock _lock = new();
+        private Task _tail = Task.CompletedTask;
+
+        public ActionLog(Func<CodingAction, Task> sink, ILogger logger, AgentTask task)
+        {
+            _sink = sink;
+            _logger = logger;
+            _task = task;
+        }
+
+        public Task Completion
+        {
+            get
+            {
+                lock (_lock)
+                {
+                    return _tail;
+                }
+            }
+        }
+
+        public void Report(CodingAction value)
+        {
+            lock (_lock)
+            {
+                var previous = _tail;
+                _tail = Task.Run(async () =>
+                {
+                    await previous.ConfigureAwait(false);
+                    try
+                    {
+                        await _sink(value).ConfigureAwait(false);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Could not record {Kind} action for task {Task}", value.Kind, _task.DisplayRef);
+                    }
+                });
+            }
         }
     }
 }

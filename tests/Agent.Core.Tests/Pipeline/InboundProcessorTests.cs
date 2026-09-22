@@ -157,6 +157,38 @@ public sealed class InboundProcessorTests
     }
 
     [Fact]
+    public async Task TaskRequest_RepositoryRefusedByPolicy_RepliesWithTheReasonAndCreatesNothing()
+    {
+        var policy = Substitute.For<IRepositoryPolicy>();
+        policy.Check("https://gitlab.internal/team/repo.git").Returns(RepositoryDecision.Deny("`team/repo` is not among the projects I may work on."));
+        using var host = TestHost.Create(s => s.AddSingleton(policy), channel: Channel.GitLab);
+
+        await host.Get<IInboundProcessor>().ProcessAsync(host.Event("do it", "bob", InboundKind.TaskRequest, task: GitLabTask()), Ct);
+
+        Assert.Equal("`team/repo` is not among the projects I may work on.", host.Replies.Last);
+        Assert.Null(await host.Get<ITaskService>().GetAsync(1, Ct));
+        Assert.Equal(AckState.Failed, host.Replies.Acks.Last().State);
+    }
+
+    [Fact]
+    public async Task FollowUp_NamingARefusedRepository_RepliesWithTheReasonAndLeavesTheTaskWaiting()
+    {
+        var policy = Substitute.For<IRepositoryPolicy>();
+        policy.Check(Arg.Any<string>()).Returns(RepositoryDecision.Deny("I only work on repositories hosted on `gitlab.internal`, not `github.com`."));
+        using var host = TestHost.Create(s => s.AddSingleton(policy), channel: Channel.Jira);
+        var processor = host.Get<IInboundProcessor>();
+        await processor.ProcessAsync(host.Event("Do it", "bob", InboundKind.TaskRequest, task: new TaskContext { Source = TaskSource.JiraIssue, SourceRef = "PROJ-9" }), Ct);
+
+        await processor.ProcessAsync(host.Event("use https://github.com/team/repo.git please", "bob", InboundKind.FollowUp, task: new TaskContext { Source = TaskSource.JiraIssue, SourceRef = "PROJ-9" }), Ct);
+
+        Assert.Equal("I only work on repositories hosted on `gitlab.internal`, not `github.com`.", host.Replies.Last);
+        var task = (await host.Get<ITaskStore>().GetAsync(1, Ct))!;
+        Assert.Null(task.RepoUrl);
+        Assert.Equal(AgentTaskStatus.NeedsInput, task.Status);
+        Assert.Null(task.PendingInstruction);
+    }
+
+    [Fact]
     public async Task FollowUp_OnKnownTask_QueuesInstruction()
     {
         using var host = TestHost.Create(channel: Channel.GitLab);

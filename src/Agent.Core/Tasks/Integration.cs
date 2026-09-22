@@ -12,22 +12,66 @@ public interface ITaskNotifier
     Task NotifyAsync(AgentTask task, string markdown, CancellationToken cancellationToken);
 }
 
+/// <summary>
+/// A task message that must reach a thread at most once. <see cref="Key"/> is unique within the task
+/// ("plan", "published:2"): the router records it before posting, so a retried attempt, a restarted worker
+/// or a repeated poll cannot post the same message twice. <see cref="Terminal"/> messages (merge request
+/// opened, failed, needs input, CI fix given up) are also copied to every <see cref="ITaskNotificationMirror"/>;
+/// progress stays on the originating thread.
+/// </summary>
+public sealed record TaskNotification(string Key, string Markdown, bool Terminal = false);
+
+/// <summary>
+/// Receives a copy of terminal task notifications, typically an operations channel in chat. Channels register
+/// one when they have somewhere to post; a mirror that is not configured reports <see cref="Enabled"/> false and
+/// is skipped without consuming the idempotency key.
+/// </summary>
+public interface ITaskNotificationMirror
+{
+    Channel Channel { get; }
+
+    bool Enabled { get; }
+
+    Task MirrorAsync(AgentTask task, TaskNotification notification, CancellationToken cancellationToken);
+}
+
 /// <summary>Routes a notification to the notifier for the task's channel.</summary>
 public interface ITaskNotifierRouter
 {
+    /// <summary>Posts progress to the originating thread. Not deduplicated; use for messages that may repeat.</summary>
     Task NotifyAsync(AgentTask task, string markdown, CancellationToken cancellationToken);
+
+    /// <summary>Posts once per key to the originating thread, and copies terminal notifications to the mirrors.</summary>
+    Task NotifyAsync(AgentTask task, TaskNotification notification, CancellationToken cancellationToken);
+
+    /// <summary>Copies a notification to the mirrors only, for events a channel has already posted on its own.</summary>
+    Task MirrorAsync(AgentTask task, TaskNotification notification, CancellationToken cancellationToken);
 }
 
 public sealed class TaskNotifierRouter : ITaskNotifierRouter
 {
     private readonly IEnumerable<ITaskNotifier> _notifiers;
+    private readonly IProcessedEventStore _processed;
+    private readonly IEnumerable<ITaskNotificationMirror> _mirrors;
     private readonly ILogger<TaskNotifierRouter> _logger;
 
-    public TaskNotifierRouter(IEnumerable<ITaskNotifier> notifiers, ILogger<TaskNotifierRouter> logger)
+    public TaskNotifierRouter(
+        IEnumerable<ITaskNotifier> notifiers,
+        IProcessedEventStore processed,
+        IEnumerable<ITaskNotificationMirror> mirrors,
+        ILogger<TaskNotifierRouter> logger)
     {
         _notifiers = notifiers;
+        _processed = processed;
+        _mirrors = mirrors;
         _logger = logger;
     }
+
+    /// <summary>The idempotency key stored for a notification posted to the originating thread.</summary>
+    public static string NotifyKey(AgentTask task, TaskNotification notification) => $"task-notify:{task.Id}:{notification.Key}";
+
+    /// <summary>The idempotency key stored for a notification copied to a mirror.</summary>
+    public static string MirrorKey(AgentTask task, TaskNotification notification) => $"task-mirror:{task.Id}:{notification.Key}";
 
     public async Task NotifyAsync(AgentTask task, string markdown, CancellationToken cancellationToken)
     {
@@ -45,6 +89,54 @@ public sealed class TaskNotifierRouter : ITaskNotifierRouter
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogError(ex, "Failed to notify {Channel} for task {Task}", task.NotifyChannel, task.DisplayRef);
+        }
+    }
+
+    public async Task NotifyAsync(AgentTask task, TaskNotification notification, CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(notification.Key);
+
+        // Claim the key before posting: a duplicate is worse than a lost message, because the task event log
+        // still has what was said and a failed post is logged as an error either way.
+        if (await _processed.TryMarkProcessedAsync(task.NotifyChannel, NotifyKey(task, notification), cancellationToken).ConfigureAwait(false))
+        {
+            await NotifyAsync(task, notification.Markdown, cancellationToken).ConfigureAwait(false);
+        }
+        else
+        {
+            _logger.LogDebug("Task {Task}: notification {Key} was already posted to {Channel}", task.DisplayRef, notification.Key, task.NotifyChannel);
+        }
+
+        if (notification.Terminal)
+        {
+            await MirrorAsync(task, notification, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    public async Task MirrorAsync(AgentTask task, TaskNotification notification, CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(notification.Key);
+
+        foreach (var mirror in _mirrors)
+        {
+            if (!mirror.Enabled)
+            {
+                continue;
+            }
+
+            try
+            {
+                if (!await _processed.TryMarkProcessedAsync(mirror.Channel, MirrorKey(task, notification), cancellationToken).ConfigureAwait(false))
+                {
+                    continue;
+                }
+
+                await mirror.MirrorAsync(task, notification, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogError(ex, "Failed to mirror task {Task} notification {Key} to {Channel}", task.DisplayRef, notification.Key, mirror.Channel);
+            }
         }
     }
 }

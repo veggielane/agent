@@ -201,7 +201,7 @@ The CLI reads `appsettings.json` next to the binary, then `%APPDATA%/agent/appse
 | Jira | `[~agent-bot]` in a comment to ask; add the `agent` label to hand the issue over as a coding task |
 | GitLab | `@agent-bot` in an issue or MR note; assign an issue to the bot or label it `agent` to start a task; mention it on the agent's MR for follow-ups |
 | Anywhere | `!fix <issue-or-repo> <what to do>` starts a coding task from any channel, so work can be asked for in a Mattermost thread as well as from a ticket |
-| Anywhere | `!help`, `!status`, `!tasks`, `!task 12`, `!cancel 12`, `!model`, `!whoami`, plus YAML commands like `!summarize` |
+| Anywhere | `!help`, `!status`, `!tasks`, `!task 12` (`--actions` lists what the coding loop wrote and ran), `!cancel 12`, `!model`, `!whoami`, plus YAML commands like `!summarize` |
 
 ### How a coding task runs
 

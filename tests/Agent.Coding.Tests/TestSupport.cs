@@ -38,6 +38,31 @@ public sealed class TempDir : IDisposable
     }
 }
 
+/// <summary>An <see cref="IProgress{T}"/> that records synchronously, unlike <see cref="Progress{T}"/> which posts to a context.</summary>
+public sealed class ListProgress<T> : IProgress<T>
+{
+    private readonly List<T> _items = [];
+
+    public IReadOnlyList<T> Items
+    {
+        get
+        {
+            lock (_items)
+            {
+                return _items.ToArray();
+            }
+        }
+    }
+
+    public void Report(T value)
+    {
+        lock (_items)
+        {
+            _items.Add(value);
+        }
+    }
+}
+
 public sealed class TestOptionsMonitor<T> : IOptionsMonitor<T>
 {
     public TestOptionsMonitor(T value)
